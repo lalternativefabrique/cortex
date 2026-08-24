@@ -357,6 +357,12 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
 	conv.history = append(conv.history, asking)
 	if conv.store != nil {
+		// Where the work sits when this turn runs. A session outlives the
+		// branch it opened on — begun on main, moved onto a feature — and
+		// what it passed through is what says where it left off.
+		if branch, err := gitOutput(r.Context(), s.cfg.Root, "branch", "--show-current"); err == nil {
+			_ = conv.store.AppendBranch(strings.TrimSpace(branch))
+		}
 		_ = conv.store.Append(asking)
 	}
 
@@ -550,13 +556,54 @@ type SessionSummary struct {
 	Started string   `json:"started"`
 	Prompt  string   `json:"prompt"`
 	Touched []string `json:"touched,omitempty"`
+	// Branches the work passed through, in order; Branch is where it left
+	// off, which is what a list shows and what a pull request is looked up by.
+	Branches []string `json:"branches,omitempty"`
+	Branch   string   `json:"branch,omitempty"`
+	// Pull is what became of that branch, when there is a pull request for
+	// it: open, merged, closed. Absent when there is none, or when nothing
+	// here can ask — no gh, no network, not a GitHub remote.
+	Pull *PullState `json:"pull,omitempty"`
+}
+
+// PullState is a branch's pull request, as a list needs it.
+type PullState struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Title  string `json:"title"`
+}
+
+// pullFor asks gh what became of a branch.
+//
+// Best effort by design: a machine with no gh, no network or a remote that is
+// not GitHub gets a session list without pull requests, which is still the
+// list. Nothing here is worth failing a page over.
+func pullFor(ctx context.Context, root, branch string) *PullState {
+	if branch == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch,
+		"--json", "number,state,title")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var found PullState
+	if json.Unmarshal(out, &found) != nil || found.Number == 0 {
+		return nil
+	}
+	return &found
 }
 
 // handleSessions lists what was said here before, most recent first.
 //
 // Only this workspace's, and only the ones that got as far as a question: a
 // session opened and abandoned has nothing to recognise it by.
-func (s *Server) handleSessions(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	earlier, err := session.List(40)
 	if err != nil {
 		writeJSON(w, http.StatusOK, []SessionSummary{})
@@ -567,15 +614,55 @@ func (s *Server) handleSessions(w http.ResponseWriter, _ *http.Request) {
 		if e.Root != s.cfg.Root || strings.TrimSpace(e.Prompt) == "" {
 			continue
 		}
-		here = append(here, SessionSummary{
-			ID:      e.ID,
-			Root:    e.Root,
-			Model:   e.Model,
-			Started: e.Started.Format(time.RFC3339),
-			Prompt:  e.Prompt,
-			Touched: e.Touched,
-		})
+		summary := SessionSummary{
+			ID:       e.ID,
+			Root:     e.Root,
+			Model:    e.Model,
+			Started:  e.Started.Format(time.RFC3339),
+			Prompt:   e.Prompt,
+			Touched:  e.Touched,
+			Branches: e.Branches,
+		}
+		if n := len(e.Branches); n > 0 {
+			summary.Branch = e.Branches[n-1]
+		}
+		here = append(here, summary)
 	}
+
+	// One gh call per distinct branch, at once: in a row they would be forty
+	// four-second timeouts on a machine with no network, and the list is what
+	// was asked for — the pull requests are what can be added to it.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	asked := map[string]*PullState{}
+	for i := range here {
+		branch := here[i].Branch
+		if branch == "" {
+			continue
+		}
+		mu.Lock()
+		_, already := asked[branch]
+		if !already {
+			asked[branch] = nil
+		}
+		mu.Unlock()
+		if already {
+			continue
+		}
+		wg.Add(1)
+		go func(branch string) {
+			defer wg.Done()
+			found := pullFor(r.Context(), s.cfg.Root, branch)
+			mu.Lock()
+			asked[branch] = found
+			mu.Unlock()
+		}(branch)
+	}
+	wg.Wait()
+	for i := range here {
+		here[i].Pull = asked[here[i].Branch]
+	}
+
 	writeJSON(w, http.StatusOK, here)
 }
 

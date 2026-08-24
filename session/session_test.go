@@ -208,3 +208,43 @@ func TestSessionFileIsPrivate(t *testing.T) {
 		t.Fatalf("mode = %v, want 0600 — transcripts carry repository contents", info.Mode().Perm())
 	}
 }
+
+func TestASessionRemembersTheBranchesItPassedThrough(t *testing.T) {
+	// Work begun on main and moved onto a feature branch is one session, and
+	// where it left off is the last branch it saw — not the one it opened on.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	store, id, err := Create(time.Now(), t.TempDir(), "m", "fix the thing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range []string{"main", "main", "feat/thing"} {
+		if err := store.AppendBranch(branch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Append(agent.Message{Role: agent.RoleUser, Content: "fix the thing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := List(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *Summary
+	for i := range listed {
+		if listed[i].ID == id {
+			found = &listed[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("the session that was just written is not listed")
+	}
+	// Twice on main is one move, not two: the journal reads as what changed.
+	if got := found.Branches; len(got) != 2 || got[0] != "main" || got[1] != "feat/thing" {
+		t.Fatalf("branches = %v, want [main feat/thing]", got)
+	}
+}

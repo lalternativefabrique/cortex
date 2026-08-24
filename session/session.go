@@ -33,19 +33,29 @@ type Record struct {
 	// At timestamps a usage record, so consumption can be attributed to a
 	// day even when a session spans midnight.
 	At string `json:"at,omitempty"`
+	// Branch is where the work sat when a turn ran. Written only when it
+	// changes, so the journal reads as the moves rather than a repetition.
+	Branch string `json:"branch,omitempty"`
 }
 
 const (
 	recordHeader  = "header"
 	recordMessage = "message"
 	recordUsage   = "usage"
+	// A session outlives the branch it started on: work begun on main moves
+	// to a feature branch, and the answer to "what was I doing here" is the
+	// branches it passed through, not the one it happened to open on.
+	recordBranch = "branch"
 )
 
 // Store appends a session to disk.
 type Store struct {
-	path string
-	f    *os.File
-	w    *bufio.Writer
+	// branch is the last one written, so an unchanged branch is not repeated
+	// on every turn.
+	branch string
+	path   string
+	f      *os.File
+	w      *bufio.Writer
 }
 
 // Dir returns the directory sessions live in, creating it if needed.
@@ -130,6 +140,16 @@ func (s *Store) append(r Record) error {
 }
 
 // Path is the session file's location.
+// AppendBranch notes where the work sits, when that has changed since the
+// last turn. A session that never leaves its branch writes this once.
+func (s *Store) AppendBranch(branch string) error {
+	if branch == "" || branch == s.branch {
+		return nil
+	}
+	s.branch = branch
+	return s.append(Record{Type: recordBranch, Branch: branch})
+}
+
 func (s *Store) Path() string { return s.path }
 
 // Close flushes and closes the file.
@@ -248,6 +268,9 @@ type Summary struct {
 	// sessions on the same subject apart: the question they opened with is
 	// often the same, the work rarely is.
 	Touched []string
+	// Branches are the ones the work passed through, in order. The last is
+	// where it left off, which is what a list wants to show.
+	Branches []string
 }
 
 // List returns stored sessions, most recent first.
@@ -322,7 +345,14 @@ func scanSummary(scanner *bufio.Scanner, s *Summary) {
 	seen := map[string]bool{}
 	for line := 0; line < maxSummaryLines && scanner.Scan(); line++ {
 		var r Record
-		if json.Unmarshal(scanner.Bytes(), &r) != nil || r.Message == nil {
+		if json.Unmarshal(scanner.Bytes(), &r) != nil {
+			continue
+		}
+		if r.Type == recordBranch && r.Branch != "" {
+			s.Branches = append(s.Branches, r.Branch)
+			continue
+		}
+		if r.Message == nil {
 			continue
 		}
 		if s.Prompt == "" && r.Message.Role == agent.RoleUser {
