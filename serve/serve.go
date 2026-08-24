@@ -27,6 +27,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/sandbox"
 	"github.com/lalternative/packages/go/cortex/skills"
 	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternative/packages/go/cortex/vision"
 )
 
 // Config parameterises the local server.
@@ -49,6 +50,10 @@ type Config struct {
 	// lets a conversation be evicted and compacted rather than run into it.
 	// Zero disables both.
 	ContextWindow int
+	// Vision describes images the agent finds in the workspace — a screenshot
+	// of a failing page, a diagram, a mockup. Empty Model leaves the tool out
+	// rather than offering one that answers every call with an error.
+	Vision vision.Config
 	// Approver gates writes and commands. Nil approves everything, which is
 	// right when the person asking is the person whose machine it is.
 	Approver tools.Approver
@@ -99,7 +104,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		slog.Warn("serve: skills unavailable", "error", err)
 	}
-	return &Server{
+	srv := &Server{
 		cfg:    cfg,
 		skills: available,
 		tasks:  newTaskStore(0),
@@ -116,7 +121,17 @@ func New(cfg Config) (*Server, error) {
 				Approver: cfg.Approver,
 			}),
 		},
-	}, nil
+	}
+	if strings.TrimSpace(cfg.Vision.Model) != "" {
+		describer, err := vision.New(cfg.Vision)
+		if err != nil {
+			return nil, fmt.Errorf("vision: %w", err)
+		}
+		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
+			Root: cfg.Root, Describer: describer,
+		}))
+	}
+	return srv, nil
 }
 
 // Listen binds the address and returns the listener, so the caller can print

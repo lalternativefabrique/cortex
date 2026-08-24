@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternative/packages/go/cortex/vision"
 )
 
 func newServer(t *testing.T, token string) http.Handler {
@@ -301,4 +302,44 @@ func TestTheHeartbeatIsAFrameReadersSkip(t *testing.T) {
 	if !strings.HasSuffix(beat, "\n\n") {
 		t.Fatal("a frame ends on a blank line, or the next one is glued to it")
 	}
+}
+
+func TestTheImageToolIsOfferedOnlyWithAVisionModel(t *testing.T) {
+	// Offering it without one would answer every call with an error, which
+	// the agent reads as a broken tool rather than an absent capability.
+	plain, err := New(Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named(plain.tools, "describe_image") {
+		t.Fatal("the image tool was offered with no vision model set")
+	}
+
+	seeing, err := New(Config{
+		Root:   t.TempDir(),
+		Vision: vision.Config{BaseURL: "https://example.test/v1", APIKey: "k", Model: "pixtral"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !named(seeing.tools, "describe_image") {
+		t.Fatalf("the image tool is missing; tools are %v", toolNames(seeing.tools))
+	}
+}
+
+func named(tools []agent.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNames(tools []agent.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name())
+	}
+	return names
 }
