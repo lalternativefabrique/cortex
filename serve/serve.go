@@ -208,9 +208,9 @@ type TurnRequest struct {
 	// Skill names one to work under. Its instructions are prepended to the
 	// turn, exactly as the CLI did, so the window sends a name rather than
 	// carrying a copy of the body it would have to keep in step.
-	Skill string `json:"skill,omitempty"`
-	System   string    `json:"system,omitempty"`
-	MaxSteps int       `json:"max_steps,omitempty"`
+	Skill    string `json:"skill,omitempty"`
+	System   string `json:"system,omitempty"`
+	MaxSteps int    `json:"max_steps,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -221,7 +221,7 @@ type Message struct {
 
 // Event is what the window renders as the turn unfolds.
 type Event struct {
-	Kind   string `json:"kind"`
+	Kind string `json:"kind"`
 	// Step is which model call this is, so the window can say "step 3" while
 	// it waits rather than showing an unqualified spinner.
 	Step   int    `json:"step,omitempty"`
@@ -243,9 +243,9 @@ type Usage struct {
 	Steps             int `json:"steps"`
 	// ToolCalls is how many the turn made, and Session* is what the whole
 	// conversation has cost so far — what the CLI printed under every answer.
-	ToolCalls          int `json:"tool_calls"`
-	SessionInputTokens int `json:"session_input_tokens"`
-	SessionOutputTokens int `json:"session_output_tokens"`
+	ToolCalls                int `json:"tool_calls"`
+	SessionInputTokens       int `json:"session_input_tokens"`
+	SessionOutputTokens      int `json:"session_output_tokens"`
 	SessionCachedInputTokens int `json:"session_cached_input_tokens"`
 	// Cost is in euros, and is absent for a model this cannot price rather
 	// than zero — a run that says a real cost is nothing would be worse than
