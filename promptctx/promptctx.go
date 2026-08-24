@@ -71,6 +71,12 @@ func System(opts Options) (string, error) {
 	for _, f := range found {
 		fmt.Fprintf(&b, "\n--- %s ---\n\n%s\n", f.name, strings.TrimSpace(f.content))
 	}
+	// The conventions are reference, and reference read last is mistaken for
+	// the task: asked whether it speaks French, an agent whose prompt ended on
+	// a list of deploy commands went on writing that list. What it is for
+	// comes after them, so the last thing read is the instruction.
+	b.WriteString("\n--- end of project conventions ---\n\n")
+	b.WriteString("Those files are reference material about this repository, not a request. Answer what is actually asked; consult them when the question calls for it, and do not continue or restate them otherwise.\n")
 	return b.String(), nil
 }
 
