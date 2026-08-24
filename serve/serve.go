@@ -28,6 +28,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/pricing"
 	"github.com/lalternative/packages/go/cortex/promptctx"
 	"github.com/lalternative/packages/go/cortex/sandbox"
+	"github.com/lalternative/packages/go/cortex/session"
 	"github.com/lalternative/packages/go/cortex/skills"
 	"github.com/lalternative/packages/go/cortex/tools"
 	"github.com/lalternative/packages/go/cortex/vision"
@@ -91,6 +92,10 @@ type talk struct {
 	usage   agent.Usage
 	steps   int
 	tools   int
+	// store writes each turn to disk as it is produced, so a conversation
+	// survives the window that was having it. Nil when sessions could not be
+	// opened, which costs the history and nothing else.
+	store *session.Store
 }
 
 // New builds the server and the tool set it exposes.
@@ -168,6 +173,8 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("GET /skills", s.handleSkills)
 	mux.HandleFunc("GET /context", s.handleContext)
 	mux.HandleFunc("GET /diff", s.handleDiff)
+	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	mux.HandleFunc("POST /describe", s.handleDescribe)
 
 	// A probe holds no token, and a readiness check that answers 401 is a
@@ -347,7 +354,11 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
 		)
 	}
-	conv.history = append(conv.history, agent.Message{Role: agent.RoleUser, Content: asked})
+	asking := agent.Message{Role: agent.RoleUser, Content: asked}
+	conv.history = append(conv.history, asking)
+	if conv.store != nil {
+		_ = conv.store.Append(asking)
+	}
 
 	client, err := agent.NewClient(s.cfg.Provider)
 	if err != nil {
@@ -432,7 +443,12 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	conv.history = append(conv.history, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
+	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}
+	conv.history = append(conv.history, answered)
+	if conv.store != nil {
+		_ = conv.store.Append(answered)
+		_ = conv.store.AppendUsage(res.Usage, s.cfg.Provider.Model, time.Now())
+	}
 	conv.usage.Input += res.Usage.Input
 	conv.usage.CachedInput += res.Usage.CachedInput
 	conv.usage.Output += res.Usage.Output
@@ -515,8 +531,73 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	if req.Message == "" && len(req.Messages) > 1 {
 		opened.history = toAgentMessages(req.Messages[:len(req.Messages)-1])
 	}
+	// Written as it goes, so a conversation outlives the window having it.
+	// A store that cannot be opened costs the transcript and nothing else.
+	if store, _, err := session.Create(time.Now(), s.cfg.Root, s.cfg.Provider.Model, firstAsk(req)); err == nil {
+		opened.store = store
+	} else {
+		slog.Warn("serve: session not recorded", "error", err)
+	}
 	s.talks[id] = opened
 	return id, opened
+}
+
+// SessionSummary is an earlier conversation, as a list needs it.
+type SessionSummary struct {
+	ID      string   `json:"id"`
+	Root    string   `json:"root"`
+	Model   string   `json:"model"`
+	Started string   `json:"started"`
+	Prompt  string   `json:"prompt"`
+	Touched []string `json:"touched,omitempty"`
+}
+
+// handleSessions lists what was said here before, most recent first.
+//
+// Only this workspace's, and only the ones that got as far as a question: a
+// session opened and abandoned has nothing to recognise it by.
+func (s *Server) handleSessions(w http.ResponseWriter, _ *http.Request) {
+	earlier, err := session.List(40)
+	if err != nil {
+		writeJSON(w, http.StatusOK, []SessionSummary{})
+		return
+	}
+	here := make([]SessionSummary, 0, len(earlier))
+	for _, e := range earlier {
+		if e.Root != s.cfg.Root || strings.TrimSpace(e.Prompt) == "" {
+			continue
+		}
+		here = append(here, SessionSummary{
+			ID:      e.ID,
+			Root:    e.Root,
+			Model:   e.Model,
+			Started: e.Started.Format(time.RFC3339),
+			Prompt:  e.Prompt,
+			Touched: e.Touched,
+		})
+	}
+	writeJSON(w, http.StatusOK, here)
+}
+
+// handleResumeSession opens an earlier conversation as a live one, so the
+// next turn continues it rather than starting over.
+func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
+	loaded, err := session.Load(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	id := uuid.NewString()
+	s.mu.Lock()
+	s.talks[id] = &talk{history: loaded.Messages}
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversation": id,
+		"messages":     len(loaded.Messages),
+		"prompt":       loaded.Prompt,
+	})
 }
 
 // DescribeRequest is a pasted image and what to ask about it.
@@ -675,6 +756,18 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		SessionCost:              priced(s.cfg.Provider.Model, conv.usage),
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// firstAsk is what a session is recognised by later: the question it opened
+// with, before any skill wrapped it.
+func firstAsk(req TurnRequest) string {
+	if m := strings.TrimSpace(req.Message); m != "" {
+		return m
+	}
+	if len(req.Messages) > 0 {
+		return strings.TrimSpace(req.Messages[len(req.Messages)-1].Content)
+	}
+	return ""
 }
 
 // SkillSummary is a skill as the window needs it: enough to offer, never the
