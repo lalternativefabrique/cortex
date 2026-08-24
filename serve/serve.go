@@ -10,11 +10,14 @@
 package serve
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +74,9 @@ type Server struct {
 	tools  []agent.Tool
 	skills skills.Set
 	tasks  *taskStore
+	// describer is set when a vision model is configured, and is what turns a
+	// pasted screenshot into something the conversation can carry.
+	describer *vision.Describer
 	// What each conversation has said and seen, tool results included. The
 	// window holds none of it: a turn only makes sense against what the
 	// agent already read, and sending that back and forth would drop the
@@ -127,6 +133,7 @@ func New(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("vision: %w", err)
 		}
+		srv.describer = describer
 		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
 			Root: cfg.Root, Describer: describer,
 		}))
@@ -160,6 +167,8 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /skills", s.handleSkills)
 	mux.HandleFunc("GET /context", s.handleContext)
+	mux.HandleFunc("GET /diff", s.handleDiff)
+	mux.HandleFunc("POST /describe", s.handleDescribe)
 
 	// A probe holds no token, and a readiness check that answers 401 is a
 	// check that never passes: the kubelet counts only 2xx-3xx as healthy.
@@ -508,6 +517,91 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	}
 	s.talks[id] = opened
 	return id, opened
+}
+
+// DescribeRequest is a pasted image and what to ask about it.
+//
+// A screenshot dropped into a window has no path — it is bytes on a clipboard
+// — so it arrives inline rather than as a filename the read tool could take.
+type DescribeRequest struct {
+	// Image is base64, with or without a data: prefix.
+	Image    string `json:"image"`
+	MimeType string `json:"mime_type,omitempty"`
+	Question string `json:"question,omitempty"`
+}
+
+func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
+	if s.describer == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "no vision model is configured",
+		})
+		return
+	}
+	var req DescribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	encoded := req.Image
+	if i := strings.Index(encoded, ","); strings.HasPrefix(encoded, "data:") && i > 0 {
+		if req.MimeType == "" {
+			req.MimeType = strings.TrimSuffix(strings.TrimPrefix(encoded[:i], "data:"), ";base64")
+		}
+		encoded = encoded[i+1:]
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "the image is not base64"})
+		return
+	}
+
+	described, err := s.describer.DescribeBytes(r.Context(), data, req.MimeType, req.Question)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"description": described})
+}
+
+// Diff is what has changed in the workspace since the last commit.
+//
+// The agent edits files, and the only honest account of what a session did is
+// the tree it left behind — not what it said it did.
+type Diff struct {
+	Stat  string `json:"stat"`
+	Patch string `json:"patch"`
+	Clean bool   `json:"clean"`
+}
+
+func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	root := strings.TrimSpace(s.cfg.Root)
+	if root == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "this instance has no workspace"})
+		return
+	}
+	stat, err := gitOutput(r.Context(), root, "diff", "--stat")
+	if err != nil {
+		writeJSON(w, http.StatusOK, Diff{Clean: true})
+		return
+	}
+	patch := ""
+	// The full patch only when there is something to patch: on a large tree
+	// it is megabytes, and the window asked for a summary first.
+	if strings.TrimSpace(stat) != "" {
+		patch, _ = gitOutput(r.Context(), root, "diff")
+	}
+	writeJSON(w, http.StatusOK, Diff{
+		Stat:  stat,
+		Patch: patch,
+		Clean: strings.TrimSpace(stat) == "",
+	})
+}
+
+func gitOutput(ctx context.Context, root string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // ContextView is what the model is actually being sent.

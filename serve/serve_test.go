@@ -382,3 +382,45 @@ func TestTheContextViewShowsWhatWillBeSent(t *testing.T) {
 		t.Fatalf("status for an unknown conversation = %d, want 200", rec.Code)
 	}
 }
+
+func TestAPastedImageIsRefusedWithoutAVisionModel(t *testing.T) {
+	// Saying so beats a description that silently never arrives: the window
+	// can tell someone why their screenshot did nothing.
+	s, err := New(Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /describe", s.handleDescribe)
+
+	rec := httptest.NewRecorder()
+	body := `{"image":"aGVsbG8="}`
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/describe", strings.NewReader(body)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestTheDiffOfACleanTreeSaysSo(t *testing.T) {
+	// A directory that is not a checkout answers the same way a clean one
+	// does: there is nothing to show, which is not an error.
+	s, err := New(Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /diff", s.handleDiff)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/diff", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var diff Diff
+	if err := json.Unmarshal(rec.Body.Bytes(), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if !diff.Clean {
+		t.Fatalf("diff = %+v, want clean", diff)
+	}
+}

@@ -91,6 +91,18 @@ func (d *Describer) Model() string { return d.cfg.Model }
 // caption, which is rarely what the caller needed: "what error is shown
 // here" and "what components and spacing does this mockup use" call for
 // completely different readings of the same pixels.
+// DescribeBytes describes an image that never touched the disk — a screenshot
+// pasted into a window, which has no path to give.
+func (d *Describer) DescribeBytes(ctx context.Context, data []byte, mime, question string) (string, error) {
+	if max := d.cfg.MaxBytes; max > 0 && len(data) > max {
+		return "", fmt.Errorf("image is %d bytes, over the %d limit", len(data), max)
+	}
+	if mime == "" {
+		mime = "image/png"
+	}
+	return d.describeEncoded(ctx, "data:"+mime+";base64,"+base64.StdEncoding.EncodeToString(data), question)
+}
+
 func (d *Describer) Describe(ctx context.Context, path, question string) (string, error) {
 	dataURI, err := encodeImage(path, d.cfg.MaxBytes)
 	if err != nil {
