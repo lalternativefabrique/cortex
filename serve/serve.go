@@ -134,6 +134,17 @@ func (s *Server) Serve(ln net.Listener) error {
 // that was launched with it from everything else.
 func (s *Server) authenticated(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The window is served from another origin, so it asks first. A
+		// preflight carries no Authorization header — no browser sends one —
+		// and answering it with a 401 stops the real request from ever being
+		// made, which is why this comes before the token is checked.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		if s.cfg.Token != "" {
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if got != s.cfg.Token {
@@ -147,13 +158,6 @@ func (s *Server) authenticated(next http.Handler) http.Handler {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 				return
 			}
-		}
-		// The window is served from another origin, so it asks first.
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
 		}
 		next.ServeHTTP(w, r)
 	})
