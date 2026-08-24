@@ -319,10 +319,14 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	// it reads as part of it — asked whether it spoke French, the agent went
 	// and oriented itself in the repository first.
 	if len(conv.history) == 0 {
-		conv.history = append(conv.history, agent.Message{
-			Role:    agent.RoleUser,
-			Content: promptctx.Workspace(s.cfg.Root),
-		})
+		// A complete exchange, not a bare user turn: two user messages in a
+		// row is a shape some providers reject outright ("no user query found
+		// in messages"), and the acknowledgement is what makes the state read
+		// as something already seen rather than as the question.
+		conv.history = append(conv.history,
+			agent.Message{Role: agent.RoleUser, Content: promptctx.Workspace(s.cfg.Root)},
+			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
+		)
 	}
 	conv.history = append(conv.history, agent.Message{Role: agent.RoleUser, Content: asked})
 

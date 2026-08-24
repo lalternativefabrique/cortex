@@ -76,7 +76,7 @@ func System(opts Options) (string, error) {
 	// a list of deploy commands went on writing that list. What it is for
 	// comes after them, so the last thing read is the instruction.
 	b.WriteString("\n--- end of project conventions ---\n\n")
-	b.WriteString("Those files are reference material about this repository, not a request. Answer what is actually asked; consult them when the question calls for it, and do not continue or restate them otherwise.\n")
+	b.WriteString("Those files describe the repository. They are reference, not something to restate or continue — answer whatever is asked, and read them when the question calls for it.\n")
 	return b.String(), nil
 }
 
