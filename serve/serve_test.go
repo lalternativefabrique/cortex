@@ -276,3 +276,23 @@ func TestASkillWrapsOnlyTheLastTurn(t *testing.T) {
 		t.Fatal("the request was dropped")
 	}
 }
+
+func TestTheHeartbeatIsAFrameReadersSkip(t *testing.T) {
+	// A minute of silence is a connection an intermediary may drop, so the
+	// turn sends a comment frame while a step thinks. It must be one an SSE
+	// reader ignores rather than mistakes for an event: readers act on
+	// "data:" lines, and a comment starts with a colon.
+	const beat = ": keep-alive\n\n"
+
+	for _, line := range strings.Split(strings.TrimSpace(beat), "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			t.Fatalf("the heartbeat carries a data line: %q", line)
+		}
+	}
+	if !strings.HasPrefix(beat, ":") {
+		t.Fatal("an SSE comment starts with a colon")
+	}
+	if !strings.HasSuffix(beat, "\n\n") {
+		t.Fatal("a frame ends on a blank line, or the next one is glued to it")
+	}
+}

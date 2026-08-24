@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lalternative/packages/go/cortex/agent"
@@ -261,16 +262,45 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
+	// Tools run on their own goroutines and report through the same writer as
+	// the loop, and the heartbeat below writes from a third.
+	var writing sync.Mutex
+	write := func(frame string) {
+		writing.Lock()
+		defer writing.Unlock()
+		fmt.Fprint(w, frame)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	emit := func(e Event) {
 		payload, err := json.Marshal(e)
 		if err != nil {
 			return
 		}
-		fmt.Fprintf(w, "data: %s\n\n", payload)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		write(fmt.Sprintf("data: %s\n\n", payload))
 	}
+
+	// A step can think for a minute with nothing to say, and a connection that
+	// carries no bytes for that long is one an intermediary — a proxy, or the
+	// engine rendering the window — is free to consider dead. A comment frame
+	// is ignored by every SSE reader and keeps the connection accounted for.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		beat := time.NewTicker(10 * time.Second)
+		defer beat.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			case <-beat.C:
+				write(": keep-alive\n\n")
+			}
+		}
+	}()
 
 	steps := req.MaxSteps
 	if steps == 0 {
