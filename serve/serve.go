@@ -314,12 +314,15 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 
 	id, conv := s.conversation(req)
 
-	// What is being worked on rides with the first question rather than the
-	// system prompt: a listing where instructions are expected reads as the
-	// whole of what was sent, and the question after it goes unanswered. The
-	// CLI has always opened this way.
+	// What is being worked on opens the conversation as its own turn, the way
+	// the CLI seeds a session. Pasted in front of the first question instead,
+	// it reads as part of it — asked whether it spoke French, the agent went
+	// and oriented itself in the repository first.
 	if len(conv.history) == 0 {
-		asked = promptctx.Workspace(s.cfg.Root) + "\n\n" + asked
+		conv.history = append(conv.history, agent.Message{
+			Role:    agent.RoleUser,
+			Content: promptctx.Workspace(s.cfg.Root),
+		})
 	}
 	conv.history = append(conv.history, agent.Message{Role: agent.RoleUser, Content: asked})
 
