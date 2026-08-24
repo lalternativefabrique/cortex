@@ -45,6 +45,10 @@ type Config struct {
 	Token string
 	// MaxSteps bounds one turn. Zero leaves the agent's own default.
 	MaxSteps int
+	// ContextWindow is the model's context length in tokens, which is what
+	// lets a conversation be evicted and compacted rather than run into it.
+	// Zero disables both.
+	ContextWindow int
 	// Approver gates writes and commands. Nil approves everything, which is
 	// right when the person asking is the person whose machine it is.
 	Approver tools.Approver
@@ -362,8 +366,11 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		Tools:    s.tools,
 		System:   s.system(req.System),
 		MaxSteps: steps,
-		Stream:   true,
-		Callback: sink,
+		// Without it the history only grows, and a long conversation ends
+		// against the model's limit rather than being compacted into itself.
+		ContextWindow: s.cfg.ContextWindow,
+		Stream:        true,
+		Callback:      sink,
 	})
 	if err != nil {
 		emit(Event{Kind: "error", Err: err.Error()})
@@ -414,6 +421,15 @@ func (s *Server) system(caller string) string {
 	if strings.TrimSpace(caller) != "" {
 		b.WriteString(strings.TrimSpace(caller))
 		b.WriteString("\n\n")
+	}
+	// How to work, and then what is being worked on. Without the first the
+	// agent has tools and no idea what is expected of it, and answers a
+	// one-line question with twenty commands; the CLI never ran without it.
+	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root}); err == nil {
+		b.WriteString(base)
+		b.WriteString("\n\n")
+	} else {
+		slog.Warn("serve: system prompt unavailable", "error", err)
 	}
 	b.WriteString(promptctx.Workspace(s.cfg.Root))
 	return b.String()
