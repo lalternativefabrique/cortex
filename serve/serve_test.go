@@ -106,9 +106,10 @@ func TestTheAgentGetsTheToolsThatNeedThisMachine(t *testing.T) {
 	}
 }
 
-func TestTheCallerPromptKeepsTheWorkspaceDescription(t *testing.T) {
-	// The caller writes the conversation's own prompt and knows nothing about
-	// where it runs; the workspace is what only this side can describe.
+func TestTheCallerPromptIsKeptAndSaysHowToWork(t *testing.T) {
+	// The caller writes the conversation's own prompt; how to work is what
+	// only this side carries, and an agent without it answers a one-line
+	// question with twenty commands.
 	s, err := New(Config{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -117,8 +118,13 @@ func TestTheCallerPromptKeepsTheWorkspaceDescription(t *testing.T) {
 	if !strings.Contains(prompt, "You are a careful assistant.") {
 		t.Fatal("the caller's instructions were dropped")
 	}
-	if !strings.Contains(prompt, "Workspace:") {
-		t.Fatal("the agent was not told where it is working")
+	if !strings.Contains(prompt, "coding agent") {
+		t.Fatal("the agent was given tools and no instructions")
+	}
+	// Where it is working rides with the first question instead: a listing
+	// where instructions are expected reads as the whole of what was sent.
+	if strings.Contains(prompt, "Workspace:") {
+		t.Fatal("the workspace listing is in the system prompt")
 	}
 }
 

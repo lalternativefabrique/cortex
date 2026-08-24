@@ -298,6 +298,14 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, conv := s.conversation(req)
+
+	// What is being worked on rides with the first question rather than the
+	// system prompt: a listing where instructions are expected reads as the
+	// whole of what was sent, and the question after it goes unanswered. The
+	// CLI has always opened this way.
+	if len(conv.history) == 0 {
+		asked = promptctx.Workspace(s.cfg.Root) + "\n\n" + asked
+	}
 	conv.history = append(conv.history, agent.Message{Role: agent.RoleUser, Content: asked})
 
 	client, err := agent.NewClient(s.cfg.Provider)
@@ -431,8 +439,7 @@ func (s *Server) system(caller string) string {
 	} else {
 		slog.Warn("serve: system prompt unavailable", "error", err)
 	}
-	b.WriteString(promptctx.Workspace(s.cfg.Root))
-	return b.String()
+	return strings.TrimSpace(b.String())
 }
 
 // handleWorkspace reports what this machine is offering, so a window can say
