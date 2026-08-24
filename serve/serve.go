@@ -411,7 +411,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := runner.Run(r.Context(), toAgentMessages(req.Messages))
+	res, err := runner.Run(r.Context(), conv.history)
 	if err != nil {
 		emit(Event{Kind: "error", Err: err.Error()})
 		return
