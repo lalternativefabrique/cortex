@@ -21,6 +21,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/agent"
 	"github.com/lalternative/packages/go/cortex/promptctx"
 	"github.com/lalternative/packages/go/cortex/sandbox"
+	"github.com/lalternative/packages/go/cortex/skills"
 	"github.com/lalternative/packages/go/cortex/tools"
 )
 
@@ -53,9 +54,10 @@ type Config struct {
 
 // Server answers turns from a front end running elsewhere.
 type Server struct {
-	cfg   Config
-	tools []agent.Tool
-	tasks *taskStore
+	cfg    Config
+	tools  []agent.Tool
+	skills skills.Set
+	tasks  *taskStore
 }
 
 // New builds the server and the tool set it exposes.
@@ -69,9 +71,16 @@ func New(cfg Config) (*Server, error) {
 		cfg.Approver = tools.AllowAll{}
 	}
 	tracker := tools.NewReadTracker()
+	// A skill that cannot be read is one the window will not offer. That is a
+	// worse start than no skills at all, so a broken directory is not fatal.
+	available, err := skills.Load(cfg.Root)
+	if err != nil {
+		slog.Warn("serve: skills unavailable", "error", err)
+	}
 	return &Server{
-		cfg:   cfg,
-		tasks: newTaskStore(0),
+		cfg:    cfg,
+		skills: available,
+		tasks:  newTaskStore(0),
 		tools: []agent.Tool{
 			tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
 			tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
@@ -111,6 +120,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/steps", s.handleTaskSteps)
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
+	mux.HandleFunc("GET /skills", s.handleSkills)
 
 	// A probe holds no token, and a readiness check that answers 401 is a
 	// check that never passes: the kubelet counts only 2xx-3xx as healthy.
@@ -170,6 +180,10 @@ func (s *Server) authenticated(next http.Handler) http.Handler {
 // continue on a phone that has no repository at all.
 type TurnRequest struct {
 	Messages []Message `json:"messages"`
+	// Skill names one to work under. Its instructions are prepended to the
+	// turn, exactly as the CLI did, so the window sends a name rather than
+	// carrying a copy of the body it would have to keep in step.
+	Skill string `json:"skill,omitempty"`
 	System   string    `json:"system,omitempty"`
 	MaxSteps int       `json:"max_steps,omitempty"`
 }
@@ -219,6 +233,20 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "messages are required"})
 		return
+	}
+
+	// The skill wraps what was just asked, not the history: replaying it over
+	// every past turn would repeat its instructions once per exchange.
+	if name := strings.TrimSpace(req.Skill); name != "" {
+		skill, found := s.skills.Lookup(name)
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("no skill named %q", name),
+			})
+			return
+		}
+		last := len(req.Messages) - 1
+		req.Messages[last].Content = skill.Prompt(req.Messages[last].Content)
 	}
 
 	client, err := agent.NewClient(s.cfg.Provider)
@@ -297,6 +325,25 @@ func (s *Server) system(caller string) string {
 
 // handleWorkspace reports what this machine is offering, so a window can say
 // which repository it is pointed at before anything is asked of it.
+// SkillSummary is a skill as the window needs it: enough to offer, never the
+// body, which is the agent's business and not something to render.
+type SkillSummary struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (s *Server) handleSkills(w http.ResponseWriter, _ *http.Request) {
+	summaries := make([]SkillSummary, 0, len(s.skills))
+	for _, name := range s.skills.Names() {
+		skill, ok := s.skills.Lookup(name)
+		if !ok {
+			continue
+		}
+		summaries = append(summaries, SkillSummary{Name: skill.Name, Description: skill.Description})
+	}
+	writeJSON(w, http.StatusOK, summaries)
+}
+
 func (s *Server) handleWorkspace(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"root":    s.cfg.Root,

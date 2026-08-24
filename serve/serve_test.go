@@ -1,10 +1,13 @@
 package serve
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -176,5 +179,100 @@ func TestHealthIsServedWithoutTheToken(t *testing.T) {
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("/workspace status = %d, want 401", res2.StatusCode)
+	}
+}
+
+func serverWithSkill(t *testing.T, body string) (*Server, http.Handler) {
+	t.Helper()
+	root := t.TempDir()
+	// Skills are also read from the operator's own directories, and this test
+	// is about what the repository declares, not what this machine happens to
+	// carry.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	dir := filepath.Join(root, ".ai", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: review\ndescription: Judge the code\n---\n" + body
+	if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := New(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /turn", s.handleTurn)
+	mux.HandleFunc("GET /skills", s.handleSkills)
+	return s, mux
+}
+
+func TestSkillsAreOfferedWithoutTheirBody(t *testing.T) {
+	// The window renders the name and what it is for; the instructions are
+	// the agent's business and would only be a payload to keep in step.
+	_, h := serverWithSkill(t, "Read it, then say what is wrong.")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/skills", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got []SkillSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "review" {
+		t.Fatalf("skills = %+v, want one named review", got)
+	}
+	if got[0].Description != "Judge the code" {
+		t.Fatalf("description = %q", got[0].Description)
+	}
+	if strings.Contains(rec.Body.String(), "say what is wrong") {
+		t.Fatal("the body was served; only a summary should be")
+	}
+}
+
+func TestAnUnknownSkillIsRefused(t *testing.T) {
+	// Silently answering without it would look like it had been applied.
+	_, h := serverWithSkill(t, "anything")
+	rec := httptest.NewRecorder()
+	body := `{"skill":"nope","messages":[{"role":"user","content":"hi"}]}`
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/turn", strings.NewReader(body)))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestASkillWrapsOnlyTheLastTurn(t *testing.T) {
+	// Applied to the history it would repeat its instructions once per
+	// exchange, and cost that on every turn.
+	s, _ := serverWithSkill(t, "Read it, then say what is wrong.")
+	req := TurnRequest{
+		Skill: "review",
+		Messages: []Message{
+			{Role: "user", Content: "earlier"},
+			{Role: "assistant", Content: "sure"},
+			{Role: "user", Content: "this one"},
+		},
+	}
+
+	skill, found := s.skills.Lookup(req.Skill)
+	if !found {
+		t.Fatal("the skill written for this test was not loaded")
+	}
+	last := len(req.Messages) - 1
+	req.Messages[last].Content = skill.Prompt(req.Messages[last].Content)
+
+	if req.Messages[0].Content != "earlier" {
+		t.Fatalf("history was rewritten: %q", req.Messages[0].Content)
+	}
+	if !strings.Contains(req.Messages[last].Content, "say what is wrong") {
+		t.Fatal("the last turn carries no instructions")
+	}
+	if !strings.Contains(req.Messages[last].Content, "this one") {
+		t.Fatal("the request was dropped")
 	}
 }
