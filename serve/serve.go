@@ -159,6 +159,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/steps", s.handleTaskSteps)
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /skills", s.handleSkills)
+	mux.HandleFunc("GET /context", s.handleContext)
 
 	// A probe holds no token, and a readiness check that answers 401 is a
 	// check that never passes: the kubelet counts only 2xx-3xx as healthy.
@@ -248,6 +249,11 @@ type Event struct {
 	// arrives with the answer and is the window's to show or fold away; a turn
 	// that ends with nothing else said still has this.
 	Reasoning string `json:"reasoning,omitempty"`
+	// Tokens, Threshold and Before carry what an eviction or a compaction
+	// moved, for a window that shows how the history is being kept in size.
+	Tokens    int    `json:"tokens,omitempty"`
+	Threshold int    `json:"threshold,omitempty"`
+	Before    int    `json:"before,omitempty"`
 	Text      string `json:"text,omitempty"`
 	Tool      string `json:"tool,omitempty"`
 	Args      string `json:"args,omitempty"`
@@ -504,6 +510,79 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	return id, opened
 }
 
+// ContextView is what the model is actually being sent.
+//
+// Guessing at this is how a prompt bug survives: a window that shows it can
+// see that the system prompt ends where it should, that the history holds the
+// tool results, and how close the conversation is to the limit it will be
+// compacted at.
+type ContextView struct {
+	Model         string       `json:"model"`
+	BaseURL       string       `json:"base_url"`
+	ContextWindow int          `json:"context_window"`
+	System        string       `json:"system"`
+	SystemTokens  int          `json:"system_tokens"`
+	Tools         []string     `json:"tools"`
+	Messages      []ViewedTurn `json:"messages"`
+	HistoryTokens int          `json:"history_tokens"`
+	Usage         Usage        `json:"usage"`
+}
+
+// ViewedTurn is one message as it stands in the history, tool calls included.
+type ViewedTurn struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Tokens    int    `json:"tokens"`
+	ToolName  string `json:"tool_name,omitempty"`
+	ToolCalls int    `json:"tool_calls,omitempty"`
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	view := ContextView{
+		Model:         s.cfg.Provider.Model,
+		BaseURL:       s.cfg.Provider.BaseURL,
+		ContextWindow: s.cfg.ContextWindow,
+		System:        s.system(""),
+	}
+	view.SystemTokens = agent.EstimateTokens(view.System)
+	for _, tool := range s.tools {
+		view.Tools = append(view.Tools, tool.Name())
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conv, ok := s.talks[strings.TrimSpace(r.URL.Query().Get("conversation"))]
+	if !ok {
+		writeJSON(w, http.StatusOK, view)
+		return
+	}
+	for _, m := range conv.history {
+		turn := ViewedTurn{
+			Role:      string(m.Role),
+			Content:   m.Content,
+			Tokens:    agent.EstimateTokens(m.Content),
+			ToolCalls: len(m.ToolCalls),
+		}
+		if len(m.ToolCalls) == 1 {
+			turn.ToolName = m.ToolCalls[0].Name
+		}
+		view.HistoryTokens += turn.Tokens
+		view.Messages = append(view.Messages, turn)
+	}
+	view.Usage = Usage{
+		InputTokens:              conv.usage.Input,
+		CachedInputTokens:        conv.usage.CachedInput,
+		OutputTokens:             conv.usage.Output,
+		Steps:                    conv.steps,
+		ToolCalls:                conv.tools,
+		SessionInputTokens:       conv.usage.Input,
+		SessionCachedInputTokens: conv.usage.CachedInput,
+		SessionOutputTokens:      conv.usage.Output,
+		SessionCost:              priced(s.cfg.Provider.Model, conv.usage),
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 // SkillSummary is a skill as the window needs it: enough to offer, never the
 // body, which is the agent's business and not something to render.
 type SkillSummary struct {
@@ -575,6 +654,22 @@ func (s *eventSink) OnToolEnd(trace agent.ToolCallTrace) {
 		result = trace.Err
 	}
 	s.emit(Event{Kind: "tool_end", Tool: trace.Name, Args: trace.Arguments, Result: result})
+}
+
+// What the loop does to the history to keep it inside the window: dropping
+// the oldest tool results, then summarising what is left. Both change what
+// the model is answering from, so a window that shows the conversation
+// should be able to say when they happened.
+func (s *eventSink) OnEvict(freedTokens int) {
+	s.emit(Event{Kind: "evict", Step: s.step, Tokens: freedTokens})
+}
+
+func (s *eventSink) OnCompactStart(usedTokens, thresholdTokens int) {
+	s.emit(Event{Kind: "compact_start", Step: s.step, Tokens: usedTokens, Threshold: thresholdTokens})
+}
+
+func (s *eventSink) OnCompactEnd(beforeTokens, afterTokens int) {
+	s.emit(Event{Kind: "compact_end", Step: s.step, Tokens: afterTokens, Before: beforeTokens})
 }
 
 func (s *eventSink) OnError(err error) {

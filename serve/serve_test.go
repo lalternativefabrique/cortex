@@ -343,3 +343,42 @@ func toolNames(tools []agent.Tool) []string {
 	}
 	return names
 }
+
+func TestTheContextViewShowsWhatWillBeSent(t *testing.T) {
+	// Guessing at this is how a prompt bug survives: the window that shows it
+	// is how anyone sees the system prompt ends where it should, and how much
+	// of the model's window the conversation is using.
+	s, err := New(Config{Root: t.TempDir(), ContextWindow: 1000, Provider: agent.Provider{Model: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /context", s.handleContext)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/context", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	var view ContextView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.SystemTokens == 0 {
+		t.Fatal("the system prompt is reported as costing nothing")
+	}
+	if view.ContextWindow != 1000 {
+		t.Fatalf("context window = %d, want the one configured", view.ContextWindow)
+	}
+	if len(view.Tools) == 0 {
+		t.Fatal("no tools are listed; the agent has six")
+	}
+	// An unknown conversation is not an error: the window asks before the
+	// first turn has opened one.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/context?conversation=nope", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status for an unknown conversation = %d, want 200", rec.Code)
+	}
+}
