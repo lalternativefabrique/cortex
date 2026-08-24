@@ -35,6 +35,11 @@ type CompletionResponse struct {
 	Text      string
 	ToolCalls []ToolCall
 	Usage     Usage
+	// Reasoning is what a thinking model worked through before answering.
+	// It is not part of the answer and never goes back into the history —
+	// it is there to be shown, and to explain a turn that ended with nothing
+	// else to say.
+	Reasoning string
 	// StopReason is the provider's raw finish_reason, kept for diagnostics.
 	StopReason string
 }
@@ -151,8 +156,14 @@ type wireFunction struct {
 type wireResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string         `json:"content"`
-			ToolCalls []wireToolCall `json:"tool_calls"`
+			Content string `json:"content"`
+			// A reasoning model puts its thinking here and leaves content
+			// empty until it is done. Cut short — by a step budget, or a
+			// max_tokens — that is the whole of what it said, and dropping it
+			// leaves an answer that looks blank for no stated reason.
+			Reasoning        string         `json:"reasoning"`
+			ReasoningContent string         `json:"reasoning_content"`
+			ToolCalls        []wireToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -167,6 +178,17 @@ type wireResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+// firstNonEmpty picks the field a provider actually filled: they disagree on
+// whether reasoning arrives as "reasoning" or "reasoning_content".
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c *httpClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
@@ -294,6 +316,7 @@ func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, e
 	choice := wr.Choices[0]
 	out := CompletionResponse{
 		Text:       choice.Message.Content,
+		Reasoning:  firstNonEmpty(choice.Message.Reasoning, choice.Message.ReasoningContent),
 		StopReason: choice.FinishReason,
 		Usage: Usage{
 			Input:       wr.Usage.PromptTokens,

@@ -108,6 +108,10 @@ type Result struct {
 	ToolCalls []ToolCallTrace
 	Usage     Usage
 	Steps     int
+	// Reasoning is what the model worked through on its last step, for a
+	// model that reports it. It is not part of the answer and is not fed
+	// back — a turn that ends with nothing else has at least this to show.
+	Reasoning string
 	// Truncated reports that the loop stopped on the step budget rather than
 	// on a final answer from the model.
 	Truncated bool

@@ -176,6 +176,9 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 			return result, fmt.Errorf("step %d: %w", step, err)
 		}
 		result.Usage.Add(resp.Usage)
+		// Kept from the last step only: what it worked through on the way to
+		// the answer it gave, not every step's thinking piled up.
+		result.Reasoning = resp.Reasoning
 		r.cfg.Callback.OnModelEnd(step, resp.Text, resp.ToolCalls, resp.Usage)
 
 		assistant := Message{

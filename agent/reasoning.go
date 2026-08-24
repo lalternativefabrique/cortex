@@ -38,8 +38,13 @@ func DefaultReasoningEffort(model string) string {
 	switch {
 	case strings.Contains(m, "deepseek"):
 		return ReasoningEffortNone
-	case strings.Contains(m, "qwen"):
-		return ""
+	// A coder model in the same family does not reason, and asking it to stop
+	// would be asking about something it does not do.
+	case strings.Contains(m, "qwen") && !strings.Contains(m, "coder"):
+		// It thinks by default and spends the turn's budget doing it, which
+		// on a short question leaves nothing said at all. An agent that runs
+		// tools reasons through them instead.
+		return ReasoningEffortNone
 	default:
 		return ""
 	}

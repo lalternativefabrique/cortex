@@ -68,3 +68,15 @@ func TestTheRequestOmitsNoneEntirely(t *testing.T) {
 		t.Fatalf("the field is on the wire: %s", body)
 	}
 }
+
+func TestAThinkingModelIsAskedNotTo(t *testing.T) {
+	// Left to think, it spends the turn's budget on that and a short question
+	// comes back with nothing said — the answer never reaches content.
+	if got := DefaultReasoningEffort("qwen3.5-397b-a17b"); got != ReasoningEffortNone {
+		t.Errorf("DefaultReasoningEffort(qwen3.5) = %q, want %q", got, ReasoningEffortNone)
+	}
+	// Its coder sibling does not reason, so there is nothing to turn off.
+	if got := DefaultReasoningEffort("qwen3-coder-30b-a3b-instruct"); got != "" {
+		t.Errorf("DefaultReasoningEffort(qwen3-coder) = %q, want the server default", got)
+	}
+}

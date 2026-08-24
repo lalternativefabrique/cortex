@@ -243,12 +243,16 @@ type Event struct {
 	Kind string `json:"kind"`
 	// Step is which model call this is, so the window can say "step 3" while
 	// it waits rather than showing an unqualified spinner.
-	Step   int    `json:"step,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Tool   string `json:"tool,omitempty"`
-	Args   string `json:"args,omitempty"`
-	Result string `json:"result,omitempty"`
-	Err    string `json:"error,omitempty"`
+	Step int `json:"step,omitempty"`
+	// Reasoning is what a thinking model worked through before answering. It
+	// arrives with the answer and is the window's to show or fold away; a turn
+	// that ends with nothing else said still has this.
+	Reasoning string `json:"reasoning,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	Args      string `json:"args,omitempty"`
+	Result    string `json:"result,omitempty"`
+	Err       string `json:"error,omitempty"`
 	// Usage arrives once, at the end: the caller records what the turn cost
 	// against the account it belongs to.
 	Usage *Usage `json:"usage,omitempty"`
@@ -423,8 +427,9 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	emit(Event{
-		Kind: "message",
-		Text: res.Text,
+		Kind:      "message",
+		Text:      res.Text,
+		Reasoning: res.Reasoning,
 		Usage: &Usage{
 			InputTokens:              res.Usage.Input,
 			CachedInputTokens:        res.Usage.CachedInput,

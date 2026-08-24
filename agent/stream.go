@@ -23,8 +23,12 @@ type StreamingClient interface {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content string `json:"content"`
+			// Providers disagree on the name; a reasoning model sends one of
+			// these and no content until it has finished thinking.
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -101,6 +105,7 @@ type accumulatingCall struct {
 func readSSE(r interface{ Read([]byte) (int, error) }, onDelta func(string)) (CompletionResponse, error) {
 	var out CompletionResponse
 	var text strings.Builder
+	var reasoning strings.Builder
 	calls := map[int]*accumulatingCall{}
 	var order []int
 
@@ -142,6 +147,12 @@ func readSSE(r interface{ Read([]byte) (int, error) }, onDelta func(string)) (Co
 				onDelta(d)
 			}
 		}
+		// Kept, not streamed: a reasoning model sends this instead of content
+		// while it thinks, and a turn that ends here would otherwise arrive
+		// empty with nothing to show for the time it took.
+		if d := firstNonEmpty(choice.Delta.Reasoning, choice.Delta.ReasoningContent); d != "" {
+			reasoning.WriteString(d)
+		}
 		for _, tc := range choice.Delta.ToolCalls {
 			acc, ok := calls[tc.Index]
 			if !ok {
@@ -163,6 +174,7 @@ func readSSE(r interface{ Read([]byte) (int, error) }, onDelta func(string)) (Co
 	}
 
 	out.Text = text.String()
+	out.Reasoning = reasoning.String()
 	for _, idx := range order {
 		acc := calls[idx]
 		if acc.name == "" {
