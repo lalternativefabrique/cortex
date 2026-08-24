@@ -19,7 +19,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternative/packages/go/cortex/pricing"
 	"github.com/lalternative/packages/go/cortex/promptctx"
 	"github.com/lalternative/packages/go/cortex/sandbox"
 	"github.com/lalternative/packages/go/cortex/skills"
@@ -59,6 +62,20 @@ type Server struct {
 	tools  []agent.Tool
 	skills skills.Set
 	tasks  *taskStore
+	// What each conversation has said and seen, tool results included. The
+	// window holds none of it: a turn only makes sense against what the
+	// agent already read, and sending that back and forth would drop the
+	// eviction and compaction the runner does on it here.
+	mu    sync.Mutex
+	talks map[string]*talk
+}
+
+// talk is one conversation as the agent sees it.
+type talk struct {
+	history []agent.Message
+	usage   agent.Usage
+	steps   int
+	tools   int
 }
 
 // New builds the server and the tool set it exposes.
@@ -82,6 +99,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:    cfg,
 		skills: available,
 		tasks:  newTaskStore(0),
+		talks:  map[string]*talk{},
 		tools: []agent.Tool{
 			tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
 			tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
@@ -180,7 +198,13 @@ func (s *Server) authenticated(next http.Handler) http.Handler {
 // it runs a turn and forgets it, which is what lets the same conversation
 // continue on a phone that has no repository at all.
 type TurnRequest struct {
-	Messages []Message `json:"messages"`
+	// Conversation is the thread this turn belongs to. Empty starts one, and
+	// its id comes back on the first event so the window can carry it.
+	Conversation string `json:"conversation,omitempty"`
+	// Message is what was just asked. Messages is the older form, kept for a
+	// caller that holds the history itself.
+	Message  string    `json:"message,omitempty"`
+	Messages []Message `json:"messages,omitempty"`
 	// Skill names one to work under. Its instructions are prepended to the
 	// turn, exactly as the CLI did, so the window sends a name rather than
 	// carrying a copy of the body it would have to keep in step.
@@ -198,6 +222,9 @@ type Message struct {
 // Event is what the window renders as the turn unfolds.
 type Event struct {
 	Kind   string `json:"kind"`
+	// Step is which model call this is, so the window can say "step 3" while
+	// it waits rather than showing an unqualified spinner.
+	Step   int    `json:"step,omitempty"`
 	Text   string `json:"text,omitempty"`
 	Tool   string `json:"tool,omitempty"`
 	Args   string `json:"args,omitempty"`
@@ -214,6 +241,19 @@ type Usage struct {
 	CachedInputTokens int `json:"cached_input_tokens"`
 	OutputTokens      int `json:"output_tokens"`
 	Steps             int `json:"steps"`
+	// ToolCalls is how many the turn made, and Session* is what the whole
+	// conversation has cost so far — what the CLI printed under every answer.
+	ToolCalls          int `json:"tool_calls"`
+	SessionInputTokens int `json:"session_input_tokens"`
+	SessionOutputTokens int `json:"session_output_tokens"`
+	SessionCachedInputTokens int `json:"session_cached_input_tokens"`
+	// Cost is in euros, and is absent for a model this cannot price rather
+	// than zero — a run that says a real cost is nothing would be worse than
+	// one that says nothing.
+	Cost        *float64 `json:"cost,omitempty"`
+	SessionCost *float64 `json:"session_cost,omitempty"`
+	// Seconds is how long the turn took, as the CLI printed under each answer.
+	Seconds float64 `json:"seconds"`
 }
 
 func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +271,12 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if len(req.Messages) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "messages are required"})
+	asked := strings.TrimSpace(req.Message)
+	if asked == "" && len(req.Messages) > 0 {
+		asked = req.Messages[len(req.Messages)-1].Content
+	}
+	if asked == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
 		return
 	}
 
@@ -246,9 +290,11 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		last := len(req.Messages) - 1
-		req.Messages[last].Content = skill.Prompt(req.Messages[last].Content)
+		asked = skill.Prompt(asked)
 	}
+
+	id, conv := s.conversation(req)
+	conv.history = append(conv.history, agent.Message{Role: agent.RoleUser, Content: asked})
 
 	client, err := agent.NewClient(s.cfg.Provider)
 	if err != nil {
@@ -307,6 +353,9 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		steps = s.cfg.MaxSteps
 	}
 
+	emit(Event{Kind: "conversation", Text: id})
+	started := time.Now()
+
 	sink := &eventSink{emit: emit}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
@@ -326,14 +375,31 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		emit(Event{Kind: "error", Err: err.Error()})
 		return
 	}
+	s.mu.Lock()
+	conv.history = append(conv.history, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
+	conv.usage.Input += res.Usage.Input
+	conv.usage.CachedInput += res.Usage.CachedInput
+	conv.usage.Output += res.Usage.Output
+	conv.steps += res.Steps
+	conv.tools += sink.toolCalls
+	session := conv.usage
+	s.mu.Unlock()
+
 	emit(Event{
 		Kind: "message",
 		Text: res.Text,
 		Usage: &Usage{
-			InputTokens:       res.Usage.Input,
-			CachedInputTokens: res.Usage.CachedInput,
-			OutputTokens:      res.Usage.Output,
-			Steps:             res.Steps,
+			InputTokens:              res.Usage.Input,
+			CachedInputTokens:        res.Usage.CachedInput,
+			OutputTokens:             res.Usage.Output,
+			Steps:                    res.Steps,
+			ToolCalls:                sink.toolCalls,
+			SessionInputTokens:       session.Input,
+			SessionCachedInputTokens: session.CachedInput,
+			SessionOutputTokens:      session.Output,
+			Cost:                     priced(s.cfg.Provider.Model, res.Usage),
+			SessionCost:              priced(s.cfg.Provider.Model, session),
+			Seconds:                  time.Since(started).Seconds(),
 		},
 	})
 	emit(Event{Kind: "done"})
@@ -355,6 +421,39 @@ func (s *Server) system(caller string) string {
 
 // handleWorkspace reports what this machine is offering, so a window can say
 // which repository it is pointed at before anything is asked of it.
+// priced converts what a turn used into euros, or nothing when the model is
+// one the table does not carry.
+func priced(model string, u agent.Usage) *float64 {
+	cost, known := pricing.Published.Cost(model, u.Input, u.CachedInput, u.Output)
+	if !known {
+		return nil
+	}
+	return &cost
+}
+
+// conversation finds the thread this turn belongs to, or opens one.
+//
+// A caller that sends its own history — the older form — gets a thread seeded
+// with it, so both callers reach the same runner.
+func (s *Server) conversation(req TurnRequest) (string, *talk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id := strings.TrimSpace(req.Conversation); id != "" {
+		if found, ok := s.talks[id]; ok {
+			return id, found
+		}
+	}
+
+	id := uuid.NewString()
+	opened := &talk{}
+	if req.Message == "" && len(req.Messages) > 1 {
+		opened.history = toAgentMessages(req.Messages[:len(req.Messages)-1])
+	}
+	s.talks[id] = opened
+	return id, opened
+}
+
 // SkillSummary is a skill as the window needs it: enough to offer, never the
 // body, which is the agent's business and not something to render.
 type SkillSummary struct {
@@ -398,6 +497,8 @@ func toAgentMessages(in []Message) []agent.Message {
 
 // eventSink turns the agent's callbacks into stream events.
 type eventSink struct {
+	step      int
+	toolCalls int
 	agent.NopCallback
 	emit func(Event)
 }
@@ -406,8 +507,16 @@ func (s *eventSink) OnTextDelta(text string) {
 	s.emit(Event{Kind: "delta", Text: text})
 }
 
+func (s *eventSink) OnStepStart(step int) {
+	// The window says "step 3 · thinking" while it waits, as the CLI did: a
+	// spinner that never says what it is doing reads like a hang.
+	s.step = step
+	s.emit(Event{Kind: "step", Step: step})
+}
+
 func (s *eventSink) OnToolStart(name string, args json.RawMessage) {
-	s.emit(Event{Kind: "tool_start", Tool: name, Args: string(args)})
+	s.toolCalls++
+	s.emit(Event{Kind: "tool_start", Step: s.step, Tool: name, Args: string(args)})
 }
 
 func (s *eventSink) OnToolEnd(trace agent.ToolCallTrace) {
