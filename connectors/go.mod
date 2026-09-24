@@ -3,7 +3,7 @@ module github.com/lalternative/packages/go/cortex/connectors
 go 1.26.6
 
 require (
-	github.com/lalternative/packages/go/cortex v0.11.0
+	github.com/lalternative/packages/go/cortex v0.12.0
 	github.com/lalternative/packages/go/search v0.3.0
 	github.com/lalternative/packages/tornad/sdk-go v0.1.0
 	golang.org/x/image v0.46.0
@@ -11,8 +11,7 @@ require (
 
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.1 // indirect
-	github.com/JohannesKaufmann/dom v0.3.1 // indirect
-	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
+	github.com/a2aproject/a2a-go v0.3.15 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
@@ -60,6 +59,7 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 

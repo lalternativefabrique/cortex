@@ -50,6 +50,15 @@ func userConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "skode", "mcp.yaml"), nil
 }
 
+// ReadConfigFile reads one server list, for a host whose configuration names
+// the file: unlike a user's optional list, a missing one is an error.
+func ReadConfigFile(path string) (Config, error) {
+	if _, err := os.Stat(path); err != nil {
+		return Config{}, fmt.Errorf("mcp config: %w", err)
+	}
+	return readConfig(path)
+}
+
 func readConfig(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path)

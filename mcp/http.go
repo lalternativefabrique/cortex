@@ -48,6 +48,11 @@ func (t *httpTransport) notify(ctx context.Context, method string, params any) e
 		return err
 	}
 	defer httpResp.Body.Close()
+	// A notification has no response to send: the spec answers it 202
+	// Accepted, and some servers 204.
+	if httpResp.StatusCode == http.StatusAccepted || httpResp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 	return checkStatus(method, httpResp)
 }
 
@@ -83,6 +88,9 @@ func (t *httpTransport) send(ctx context.Context, req request) (*http.Response, 
 		return nil, fmt.Errorf("build request for %s: %w", req.Method, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range headersFrom(ctx) {
+		httpReq.Header.Set(k, v)
+	}
 
 	httpResp, err := t.http.Do(httpReq)
 	if err != nil {
