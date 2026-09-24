@@ -29,6 +29,10 @@ const (
 	// MCPHeadersKey carries headers every MCP call of the turn sends, such as
 	// the person's grant, beside the tool call and never to the model.
 	MCPHeadersKey = "mcpHeaders"
+	// TurnContextKey is text added to the agent's instructions for this turn
+	// only: what the caller knows of the moment (the scope the person chose,
+	// their time zone). It is not remembered.
+	TurnContextKey = "turnContext"
 )
 
 // Agent is what the container declares itself to be.

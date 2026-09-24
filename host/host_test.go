@@ -302,3 +302,16 @@ func TestAnEmptyTokenRefusesEveryone(t *testing.T) {
 		t.Fatalf("status %d, want 401", res.StatusCode)
 	}
 }
+
+func TestATurnsContextJoinsTheInstructionsForThatTurnOnly(t *testing.T) {
+	provider, bodies := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a", Instructions: "Tu réponds depuis le corpus."}, Provider: provider, Token: "t"})
+	readStream(t, rpc(t, srv.URL, "t", "message/stream", message("un", "ctx-3", map[string]any{TurnContextKey: "Le web est autorisé pour ce tour."})))
+	readStream(t, rpc(t, srv.URL, "t", "message/stream", message("deux", "ctx-3", nil)))
+	if !strings.Contains((*bodies)[0], "Tu réponds depuis le corpus.\\n\\nLe web est autorisé pour ce tour.") {
+		t.Fatalf("first turn sent %s", (*bodies)[0])
+	}
+	if strings.Contains((*bodies)[1], "Le web est autorisé") {
+		t.Fatal("a turn's context stayed for the next one")
+	}
+}

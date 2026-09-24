@@ -36,7 +36,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	if asked == "" {
 		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, "a text message is required")
 	}
-	subject, headers := metadata(reqCtx.Message)
+	subject, headers, turnContext := metadata(reqCtx.Message)
 	if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateWorking, nil)); err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
 		Tools:         tools,
-		System:        h.cfg.Agent.Instructions,
+		System:        instructions(h.cfg.Agent.Instructions, turnContext),
 		MaxSteps:      h.cfg.MaxSteps,
 		ContextWindow: h.cfg.ContextWindow,
 		Stream:        true,
@@ -112,11 +112,19 @@ func messageText(msg *a2a.Message) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func metadata(msg *a2a.Message) (string, map[string]string) {
+func instructions(base, turnContext string) string {
+	if turnContext == "" {
+		return base
+	}
+	return strings.TrimSpace(base + "\n\n" + turnContext)
+}
+
+func metadata(msg *a2a.Message) (string, map[string]string, string) {
 	if msg == nil {
-		return "", nil
+		return "", nil, ""
 	}
 	subject, _ := msg.Metadata[SubjectKey].(string)
+	turnContext, _ := msg.Metadata[TurnContextKey].(string)
 	raw, _ := msg.Metadata[MCPHeadersKey].(map[string]any)
 	headers := make(map[string]string, len(raw))
 	for k, v := range raw {
@@ -124,7 +132,7 @@ func metadata(msg *a2a.Message) (string, map[string]string) {
 			headers[k] = s
 		}
 	}
-	return strings.TrimSpace(subject), headers
+	return strings.TrimSpace(subject), headers, strings.TrimSpace(turnContext)
 }
 
 // stream writes the turn to the task as it happens.
