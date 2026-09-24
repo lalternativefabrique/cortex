@@ -22,16 +22,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/google/uuid"
 
 	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/pricing"
+	"github.com/lalternative/packages/go/cortex/mcp"
+	"github.com/lalternative/packages/go/cortex/memory"
 	"github.com/lalternative/packages/go/cortex/promptctx"
 	"github.com/lalternative/packages/go/cortex/sandbox"
 	"github.com/lalternative/packages/go/cortex/session"
 	"github.com/lalternative/packages/go/cortex/skills"
 	"github.com/lalternative/packages/go/cortex/tools"
-	"github.com/lalternative/packages/go/cortex/vision"
 )
 
 // Config parameterises the local server.
@@ -46,6 +47,10 @@ type Config struct {
 	// Addr is where to listen. Empty means 127.0.0.1 on a free port, which is
 	// the only address that makes sense — this exposes a shell.
 	Addr string
+	// PublicURL is the address an A2A client reaches this agent on, which is
+	// what its Agent Card advertises. Empty leaves the card's url empty
+	// rather than advertising a loopback port no peer can reach.
+	PublicURL string
 	// Token authenticates the window. Empty generates one, printed on start.
 	Token string
 	// MaxSteps bounds one turn. Zero leaves the agent's own default.
@@ -54,19 +59,48 @@ type Config struct {
 	// lets a conversation be evicted and compacted rather than run into it.
 	// Zero disables both.
 	ContextWindow int
-	// Vision describes images the agent finds in the workspace — a screenshot
-	// of a failing page, a diagram, a mockup. Empty Model leaves the tool out
-	// rather than offering one that answers every call with an error.
-	Vision vision.Config
+	// The capabilities below are what the host can do, not what it is built
+	// on. Each is an interface the kernel calls and never constructs: which
+	// service answers a search, reads a page or describes an image is the
+	// host's business, and a nil one simply leaves its tool out — a
+	// deployment does not offer what it cannot serve.
+	//
+	// Searcher enables web_search.
+	Searcher tools.Searcher
+	// Geocoder resolves place names. It enables the map on a local search,
+	// and is half of what weather needs.
+	Geocoder tools.Geocoder
+	// ReviewedPlaces is tried before Geocoder on a local search, for results
+	// carrying reviews.
+	ReviewedPlaces tools.ReviewedPlaceFinder
+	// PageFetcher enables fetch_url.
+	PageFetcher tools.PageFetcher
+	// Researcher enables research, which searches and reads its sources in
+	// one call. It is the same Searcher when the backend can read pages into
+	// a search answer; nil offers web_search alone, and the model falls back
+	// to searching then fetching, which is what it did before.
+	Researcher tools.Searcher
+	// Explorer enables explore_site.
+	Explorer tools.SiteExplorer
+	// Forecaster is the other half of weather.
+	Forecaster tools.Forecaster
+	// Describer enables describe_image. A Describer that also implements
+	// tools.BytesDescriber enables POST /describe, which describes a pasted
+	// image rather than one in the workspace.
+	Describer tools.Describer
+	// Pricer prices a turn's usage for the window. Nil reports every turn
+	// unpriced, which is not an error.
+	Pricer Pricer
 	// Approver gates writes and commands. Nil approves everything, which is
 	// right when the person asking is the person whose machine it is.
 	Approver tools.Approver
-	// WorkDir is where a task clones. Empty uses the OS temp directory, which
-	// is right on a workstation and wrong in a container with a read-only
-	// root — there the deployment mounts one and names it here.
-	WorkDir string
-	// TaskTimeout bounds one task. Zero means thirty minutes.
-	TaskTimeout time.Duration
+	// MCP servers to connect and offer alongside the built-in tools. A
+	// server that fails to start is logged and skipped — losing one
+	// capability is smaller than refusing to serve at all. Empty offers
+	// none, which is right for a deployment that runs unattended: MCP
+	// (a browser, a database) is for the workstation, where a person is
+	// present to notice what it does.
+	MCP mcp.Config
 }
 
 // Server answers turns from a front end running elsewhere.
@@ -74,16 +108,25 @@ type Server struct {
 	cfg    Config
 	tools  []agent.Tool
 	skills skills.Set
-	tasks  *taskStore
+	// mcpSession holds the connections to whatever Config.MCP named, so
+	// Close can shut them down. Nil when no server was configured.
+	mcpSession *mcp.Session
 	// describer is set when a vision model is configured, and is what turns a
 	// pasted screenshot into something the conversation can carry.
-	describer *vision.Describer
+	describer tools.Describer
 	// What each conversation has said and seen, tool results included. The
 	// window holds none of it: a turn only makes sense against what the
 	// agent already read, and sending that back and forth would drop the
 	// eviction and compaction the runner does on it here.
-	mu    sync.Mutex
-	talks map[string]*talk
+	mu     sync.Mutex
+	talks  map[string]*talk
+	pricer Pricer
+}
+
+// Pricer converts what a turn used into euros. The host decides where its
+// rates come from.
+type Pricer interface {
+	Cost(ctx context.Context, model string, input, cached, output int) (float64, bool)
 }
 
 // talk is one conversation as the agent sees it.
@@ -100,10 +143,8 @@ type talk struct {
 
 // New builds the server and the tool set it exposes.
 func New(cfg Config) (*Server, error) {
-	// Root is what /turn serves. A deployment that only runs tasks has no
-	// directory to offer and does not need one — each task brings its own.
-	if strings.TrimSpace(cfg.Root) == "" && strings.TrimSpace(cfg.WorkDir) == "" {
-		return nil, fmt.Errorf("serve: one of Root or WorkDir is required")
+	if strings.TrimSpace(cfg.Root) == "" {
+		return nil, fmt.Errorf("serve: Root is required")
 	}
 	if cfg.Approver == nil {
 		cfg.Approver = tools.AllowAll{}
@@ -118,8 +159,8 @@ func New(cfg Config) (*Server, error) {
 	srv := &Server{
 		cfg:    cfg,
 		skills: available,
-		tasks:  newTaskStore(0),
 		talks:  map[string]*talk{},
+		pricer: cfg.Pricer,
 		tools: []agent.Tool{
 			tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
 			tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
@@ -127,23 +168,60 @@ func New(cfg Config) (*Server, error) {
 			tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
 			tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
 			tools.NewBash(tools.BashConfig{
-				Root:     cfg.Root,
-				Sandbox:  sandbox.NewDirect(),
-				Approver: cfg.Approver,
+				Root:        cfg.Root,
+				Sandbox:     sandbox.NewDirect(),
+				Approver:    cfg.Approver,
+				Workstation: true,
 			}),
 		},
 	}
-	if strings.TrimSpace(cfg.Vision.Model) != "" {
-		describer, err := vision.New(cfg.Vision)
-		if err != nil {
-			return nil, fmt.Errorf("vision: %w", err)
-		}
-		srv.describer = describer
+	if cfg.Describer != nil {
+		srv.describer = cfg.Describer
 		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
-			Root: cfg.Root, Describer: describer,
+			Root: cfg.Root, Describer: cfg.Describer,
 		}))
 	}
+	if cfg.Searcher != nil {
+		srv.tools = append(srv.tools, tools.NewWebSearch(tools.WebSearchConfig{
+			Searcher:       cfg.Searcher,
+			Geocoder:       cfg.Geocoder,
+			ReviewedPlaces: cfg.ReviewedPlaces,
+		}))
+	}
+	if cfg.PageFetcher != nil {
+		srv.tools = append(srv.tools, tools.NewFetchURL(tools.FetchURLConfig{Fetcher: cfg.PageFetcher}))
+	}
+	if cfg.Researcher != nil {
+		srv.tools = append(srv.tools, tools.NewResearch(tools.ResearchConfig{Searcher: cfg.Researcher}))
+	}
+	if cfg.Explorer != nil {
+		srv.tools = append(srv.tools, tools.NewExploreSite(tools.ExploreConfig{Explorer: cfg.Explorer}))
+	}
+	if weather := (tools.WeatherConfig{Geocoder: cfg.Geocoder, Forecaster: cfg.Forecaster}); weather.Configured() {
+		srv.tools = append(srv.tools, tools.NewWeather(weather))
+	}
+	if len(cfg.MCP.Servers) > 0 {
+		mcpSession, mcpTools, err := mcp.Start(context.Background(), cfg.MCP, func(err error) {
+			slog.Warn("serve: mcp server unavailable", "error", err)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("mcp: %w", err)
+		}
+		srv.mcpSession = mcpSession
+		srv.tools = append(srv.tools, mcpTools...)
+	}
 	return srv, nil
+}
+
+// Close shuts down what New started besides the listener — the MCP servers,
+// if any were configured. Serve itself does not call this: the process is
+// killed by whatever launched it (Tauri, on the desktop), and the OS reaps
+// the MCP subprocesses along with it. It exists for a caller that wants an
+// orderly shutdown regardless.
+func (s *Server) Close() {
+	if s.mcpSession != nil {
+		s.mcpSession.Close()
+	}
 }
 
 // Listen binds the address and returns the listener, so the caller can print
@@ -162,13 +240,6 @@ func (s *Server) Listen() (net.Listener, error) {
 func (s *Server) Serve(ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /turn", s.handleTurn)
-	// Tasks clone a repository of their own, where /turn answers about the
-	// directory this process was started in. The paths match what the caller
-	// already speaks, so nothing about it has to know which of the two is
-	// answering.
-	mux.HandleFunc("POST /api/v1/tasks", s.handleCreateTask)
-	mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/steps", s.handleTaskSteps)
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /skills", s.handleSkills)
 	mux.HandleFunc("GET /context", s.handleContext)
@@ -176,6 +247,14 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("GET /sessions", s.handleSessions)
 	mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	mux.HandleFunc("POST /describe", s.handleDescribe)
+	// The A2A surface sits behind the same token as every other call: a
+	// protocol endpoint that runs the agent is not less sensitive for
+	// speaking a standard.
+	mux.Handle(a2aPath, a2asrv.NewJSONRPCHandler(s.a2aHandler()))
+	// Inbound webhooks, as CloudEvents. Behind the token like everything
+	// else: an endpoint that starts an agent run is not public because the
+	// caller is a machine.
+	mux.HandleFunc("POST "+eventsPath, s.handleEvents)
 
 	// A probe holds no token, and a readiness check that answers 401 is a
 	// check that never passes: the kubelet counts only 2xx-3xx as healthy.
@@ -185,6 +264,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	root.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	root.HandleFunc("GET "+cardPath, s.handleCard)
 	root.Handle("/", s.authenticated(mux))
 	return (&http.Server{
 		Handler:           root,
@@ -302,15 +382,6 @@ type Usage struct {
 }
 
 func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
-	// A deployment that only runs tasks has no directory to answer about, and
-	// every tool would resolve against whatever the process happens to sit in.
-	if strings.TrimSpace(s.cfg.Root) == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": "this instance serves tasks only; it has no workspace to answer about",
-		})
-		return
-	}
-
 	var req TurnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -427,6 +498,16 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 
 	sink := &eventSink{emit: emit}
+	// A nil agent.MemoryRecorder means "extract nothing that outlives this
+	// run" — left nil rather than assigned a *memory.Store that failed to
+	// open, which as a non-nil interface holding a nil pointer would not
+	// compare equal to nil at the point loop.go checks it.
+	var memRecorder agent.MemoryRecorder
+	if memStore, err := memory.NewStore(s.cfg.Root); err != nil {
+		slog.Warn("serve: project memory unavailable", "error", err)
+	} else {
+		memRecorder = memStore
+	}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
 		Tools:    s.tools,
@@ -434,9 +515,10 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		MaxSteps: steps,
 		// Without it the history only grows, and a long conversation ends
 		// against the model's limit rather than being compacted into itself.
-		ContextWindow: s.cfg.ContextWindow,
-		Stream:        true,
-		Callback:      sink,
+		ContextWindow:  s.cfg.ContextWindow,
+		Stream:         true,
+		Callback:       sink,
+		MemoryRecorder: memRecorder,
 	})
 	if err != nil {
 		emit(Event{Kind: "error", Err: err.Error()})
@@ -476,8 +558,8 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			SessionInputTokens:       session.Input,
 			SessionCachedInputTokens: session.CachedInput,
 			SessionOutputTokens:      session.Output,
-			Cost:                     priced(s.cfg.Provider.Model, res.Usage),
-			SessionCost:              priced(s.cfg.Provider.Model, session),
+			Cost:                     s.priced(r.Context(), s.cfg.Provider.Model, res.Usage),
+			SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, session),
 			Seconds:                  time.Since(started).Seconds(),
 		},
 	})
@@ -497,7 +579,7 @@ func (s *Server) system(caller string) string {
 	// How to work, and then what is being worked on. Without the first the
 	// agent has tools and no idea what is expected of it, and answers a
 	// one-line question with twenty commands; the CLI never ran without it.
-	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root}); err == nil {
+	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root, RecentSessions: promptctx.DefaultRecentSessions}); err == nil {
 		b.WriteString(base)
 		b.WriteString("\n\n")
 	} else {
@@ -508,10 +590,13 @@ func (s *Server) system(caller string) string {
 
 // handleWorkspace reports what this machine is offering, so a window can say
 // which repository it is pointed at before anything is asked of it.
-// priced converts what a turn used into euros, or nothing when the model is
-// one the table does not carry.
-func priced(model string, u agent.Usage) *float64 {
-	cost, known := pricing.Published.Cost(model, u.Input, u.CachedInput, u.Output)
+// priced converts what a turn used into euros, or nothing when the host
+// gave no Pricer or it has no rate for the model.
+func (s *Server) priced(ctx context.Context, model string, u agent.Usage) *float64 {
+	if s.pricer == nil {
+		return nil
+	}
+	cost, known := s.pricer.Cost(ctx, model, u.Input, u.CachedInput, u.Output)
 	if !known {
 		return nil
 	}
@@ -723,7 +808,14 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	described, err := s.describer.DescribeBytes(r.Context(), data, req.MimeType, req.Question)
+	byteser, ok := s.describer.(tools.BytesDescriber)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{
+			"error": "this deployment's vision cannot describe a pasted image",
+		})
+		return
+	}
+	described, err := byteser.DescribeBytes(r.Context(), data, req.MimeType, req.Question)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -840,7 +932,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		SessionInputTokens:       conv.usage.Input,
 		SessionCachedInputTokens: conv.usage.CachedInput,
 		SessionOutputTokens:      conv.usage.Output,
-		SessionCost:              priced(s.cfg.Provider.Model, conv.usage),
+		SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, conv.usage),
 	}
 	writeJSON(w, http.StatusOK, view)
 }

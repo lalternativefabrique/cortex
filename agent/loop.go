@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,7 +18,7 @@ import (
 // what you need.
 type Callback interface {
 	OnStepStart(step int)
-	OnModelEnd(step int, text string, toolCalls []ToolCall, usage Usage)
+	OnModelEnd(step int, text string, reasoning string, toolCalls []ToolCall, usage Usage)
 	OnToolStart(name string, args json.RawMessage)
 	OnToolEnd(trace ToolCallTrace)
 	OnTextDelta(text string)
@@ -30,15 +31,15 @@ type Callback interface {
 // NopCallback implements Callback with no-ops.
 type NopCallback struct{}
 
-func (NopCallback) OnStepStart(int)                           {}
-func (NopCallback) OnModelEnd(int, string, []ToolCall, Usage) {}
-func (NopCallback) OnToolStart(string, json.RawMessage)       {}
-func (NopCallback) OnToolEnd(ToolCallTrace)                   {}
-func (NopCallback) OnTextDelta(string)                        {}
-func (NopCallback) OnEvict(int)                               {}
-func (NopCallback) OnCompactStart(int, int)                   {}
-func (NopCallback) OnCompactEnd(int, int)                     {}
-func (NopCallback) OnError(error)                             {}
+func (NopCallback) OnStepStart(int)                                   {}
+func (NopCallback) OnModelEnd(int, string, string, []ToolCall, Usage) {}
+func (NopCallback) OnToolStart(string, json.RawMessage)               {}
+func (NopCallback) OnToolEnd(ToolCallTrace)                           {}
+func (NopCallback) OnTextDelta(string)                                {}
+func (NopCallback) OnEvict(int)                                       {}
+func (NopCallback) OnCompactStart(int, int)                           {}
+func (NopCallback) OnCompactEnd(int, int)                             {}
+func (NopCallback) OnError(error)                                     {}
 
 // Config parameterises a Runner.
 type Config struct {
@@ -63,6 +64,10 @@ type Config struct {
 	// CompactAt is the fraction of ContextWindow at which compaction runs.
 	// Zero means DefaultCompactAt.
 	CompactAt float64
+	// CompactBudget adjusts CompactAt for the state of the run so far. Nil
+	// installs DefaultCompactBudget; pass NoCompactBudget to keep the fixed
+	// CompactAt fraction unmodified instead.
+	CompactBudget func(BudgetState) float64
 	// Compactor shrinks the history when the threshold is crossed. Nil with
 	// a non-zero ContextWindow installs a SummaryCompactor over Client.
 	Compactor Compactor
@@ -74,13 +79,22 @@ type Config struct {
 	Stream bool
 	// Recorder persists each message as it is produced. Optional.
 	Recorder Recorder
-	Callback Callback
+	// MemoryRecorder persists what compaction extracts, so it survives past
+	// this run instead of only holding the model's attention within it.
+	// Optional; nil means an extraction is used in-run and then discarded.
+	MemoryRecorder MemoryRecorder
+	Callback       Callback
 }
 
 // Recorder persists conversation messages as a run proceeds, so an
 // interrupted session can be resumed.
 type Recorder interface {
 	Append(Message) error
+}
+
+// MemoryRecorder persists a MemoryExtraction produced by compaction.
+type MemoryRecorder interface {
+	Append(MemoryExtraction) error
 }
 
 const (
@@ -121,6 +135,9 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if cfg.CompactAt == 0 {
 		cfg.CompactAt = DefaultCompactAt
 	}
+	if cfg.CompactBudget == nil {
+		cfg.CompactBudget = DefaultCompactBudget
+	}
 	if cfg.EvictKeepRecent == 0 {
 		cfg.EvictKeepRecent = DefaultEvictKeepRecent
 	}
@@ -156,7 +173,11 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 
 		history = r.evict(history)
 
-		if compacted, did, err := r.maybeCompact(ctx, history); err != nil {
+		compacted, did, compactUsage, err := r.maybeCompact(ctx, history, step)
+		// Counted whether or not the compaction succeeded: a summarisation that
+		// failed late still burned the tokens it sent.
+		result.Usage.Add(compactUsage)
+		if err != nil {
 			// A failed compaction is not fatal on its own: the next model
 			// call may still fit. Report it and carry on with the history
 			// as it stands.
@@ -179,7 +200,7 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 		// Kept from the last step only: what it worked through on the way to
 		// the answer it gave, not every step's thinking piled up.
 		result.Reasoning = resp.Reasoning
-		r.cfg.Callback.OnModelEnd(step, resp.Text, resp.ToolCalls, resp.Usage)
+		r.cfg.Callback.OnModelEnd(step, resp.Text, resp.Reasoning, resp.ToolCalls, resp.Usage)
 
 		assistant := Message{
 			Role:      RoleAssistant,
@@ -277,6 +298,7 @@ func (r *Runner) executeOne(ctx context.Context, call ToolCall) toolOutcome {
 		// run dying on a recoverable mistake.
 		return finish(fmt.Sprintf("error: %v", err), err)
 	}
+	trace.Metadata = res.Metadata
 
 	content, truncated := TruncateMiddle(res.Content, r.cfg.MaxToolResultBytes)
 	if truncated {
@@ -300,25 +322,120 @@ func (r *Runner) evict(history []Message) []Message {
 	return out
 }
 
+// BudgetState is what maybeCompact knows about the run when it decides
+// whether the fixed CompactAt fraction still applies.
+type BudgetState struct {
+	Steps      int
+	MaxSteps   int
+	ToolErrors int
+	// Repeats is how many of the trailing tool calls repeat an earlier call
+	// (same name and arguments) within the same window ToolErrors is counted
+	// over. A run stuck retrying the same call is making no progress, and the
+	// repeated results are the least valuable bytes in the window.
+	Repeats int
+}
+
+// NoCompactBudget keeps Config.CompactAt as a fixed fraction, disabling the
+// reactive adjustments DefaultCompactBudget makes. Pass it explicitly — a nil
+// Config.CompactBudget installs DefaultCompactBudget instead.
+func NoCompactBudget(BudgetState) float64 { return DefaultCompactAt }
+
+// DefaultCompactBudget lowers the trigger fraction as MaxSteps approaches, so
+// a run that is about to be truncated compacts proactively rather than being
+// cut off holding a full window it never used again. It also lowers the
+// fraction when the run is producing tool errors or repeating the same call,
+// since that stretch of history is the least worth keeping. It is installed
+// automatically by NewRunner; pass NoCompactBudget to opt out.
+func DefaultCompactBudget(s BudgetState) float64 {
+	frac := DefaultCompactAt
+	if s.MaxSteps > 0 {
+		remaining := float64(s.MaxSteps-s.Steps) / float64(s.MaxSteps)
+		if remaining < 0.25 {
+			frac = 0.6
+		}
+	}
+	if s.ToolErrors >= 3 {
+		frac -= 0.05
+	}
+	if s.Repeats >= 2 {
+		frac -= 0.05
+	}
+	return frac
+}
+
 // maybeCompact shrinks the history when it approaches the context window,
-// reporting whether it did.
-func (r *Runner) maybeCompact(ctx context.Context, history []Message) ([]Message, bool, error) {
+// reporting whether it did and what the summarisation itself cost.
+func (r *Runner) maybeCompact(ctx context.Context, history []Message, step int) ([]Message, bool, Usage, error) {
 	if r.cfg.ContextWindow <= 0 || r.cfg.Compactor == nil {
-		return history, false, nil
+		return history, false, Usage{}, nil
 	}
 	used := EstimateMessages(r.cfg.System, history) + r.toolTokens
-	threshold := int(float64(r.cfg.ContextWindow) * r.cfg.CompactAt)
+	fraction := r.cfg.CompactAt
+	if r.cfg.CompactBudget != nil {
+		fraction = r.cfg.CompactBudget(BudgetState{
+			Steps:      step,
+			MaxSteps:   r.cfg.MaxSteps,
+			ToolErrors: toolErrorsIn(history, r.cfg.EvictKeepRecent),
+			Repeats:    repeatedToolCallsIn(history, r.cfg.EvictKeepRecent),
+		})
+	}
+	threshold := int(float64(r.cfg.ContextWindow) * fraction)
 	if used < threshold {
-		return history, false, nil
+		return history, false, Usage{}, nil
 	}
 
 	r.cfg.Callback.OnCompactStart(used, threshold)
-	compacted, err := r.cfg.Compactor.Compact(ctx, r.cfg.System, history)
+	compacted, mem, usage, err := r.cfg.Compactor.Compact(ctx, r.cfg.System, history)
 	if err != nil {
-		return history, false, err
+		return history, false, usage, err
+	}
+	if mem != nil && !mem.IsEmpty() && r.cfg.MemoryRecorder != nil {
+		if err := r.cfg.MemoryRecorder.Append(*mem); err != nil {
+			r.cfg.Callback.OnError(fmt.Errorf("record memory: %w", err))
+		}
 	}
 	r.cfg.Callback.OnCompactEnd(used, EstimateMessages(r.cfg.System, compacted)+r.toolTokens)
-	return compacted, true, nil
+	return compacted, true, usage, nil
+}
+
+// toolErrorsIn counts tool results prefixed "error: " within the last
+// keepRecent messages — the stretch a budget decision should react to, not
+// errors from earlier in a long-since-recovered run.
+func toolErrorsIn(history []Message, keepRecent int) int {
+	start := len(history) - keepRecent
+	if start < 0 {
+		start = 0
+	}
+	n := 0
+	for _, m := range history[start:] {
+		if m.Role == RoleTool && strings.HasPrefix(m.Content, "error: ") {
+			n++
+		}
+	}
+	return n
+}
+
+// repeatedToolCallsIn counts tool calls within the last keepRecent messages
+// whose name and arguments match an earlier call in that same window — the
+// model re-running something it already tried, rather than making progress.
+func repeatedToolCallsIn(history []Message, keepRecent int) int {
+	start := len(history) - keepRecent
+	if start < 0 {
+		start = 0
+	}
+	seen := map[string]bool{}
+	repeats := 0
+	for _, m := range history[start:] {
+		for _, call := range m.ToolCalls {
+			key := call.Name + string(call.Arguments)
+			if seen[key] {
+				repeats++
+				continue
+			}
+			seen[key] = true
+		}
+	}
+	return repeats
 }
 
 // complete streams the model call when both the client and the caller

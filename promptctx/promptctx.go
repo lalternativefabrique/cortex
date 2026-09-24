@@ -15,6 +15,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/lalternative/packages/go/cortex/memory"
+	"github.com/lalternative/packages/go/cortex/session"
 )
 
 //go:embed system.md
@@ -37,11 +40,19 @@ type Options struct {
 	ConventionFiles []string
 	// Override replaces the embedded system prompt entirely when non-empty.
 	Override string
+	// RecentSessions bounds how many past sessions on Root are summarised
+	// into the prefix. Zero omits the section entirely — most callers outside
+	// an interactive CLI have no use for "what was I doing last time".
+	RecentSessions int
 }
 
 // DefaultConventionFiles are the conventional names for per-project agent
 // instructions.
 var DefaultConventionFiles = []string{"AGENTS.md", "CLAUDE.md", ".ai/instructions.md"}
+
+// DefaultRecentSessions is how many past sessions Options.RecentSessions
+// summarises when a caller wants the section but has no opinion on size.
+const DefaultRecentSessions = 5
 
 // System builds the stable prefix: base instructions plus any project
 // conventions found under Root. Nothing volatile belongs in the result.
@@ -60,24 +71,80 @@ func System(opts Options) (string, error) {
 		names = DefaultConventionFiles
 	}
 	found := readAll(opts.Root, names)
-	if len(found) == 0 {
-		return base, nil
-	}
 
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\n## Project conventions\n\n")
-	b.WriteString("These come from the repository itself and take precedence over the general guidance above. Where two of them disagree, the longer and more specific one is usually the current one; say so rather than following the stale one silently.\n")
-	for _, f := range found {
-		fmt.Fprintf(&b, "\n--- %s ---\n\n%s\n", f.name, strings.TrimSpace(f.content))
+
+	if len(found) > 0 {
+		b.WriteString("\n\n## Project conventions\n\n")
+		b.WriteString("These come from the repository itself and take precedence over the general guidance above. Where two of them disagree, the longer and more specific one is usually the current one; say so rather than following the stale one silently.\n")
+		for _, f := range found {
+			fmt.Fprintf(&b, "\n--- %s ---\n\n%s\n", f.name, strings.TrimSpace(f.content))
+		}
+		// The conventions are reference, and reference read last is mistaken
+		// for the task: asked whether it speaks French, an agent whose prompt
+		// ended on a list of deploy commands went on writing that list. What
+		// it is for comes after them, so the last thing read is the
+		// instruction.
+		b.WriteString("\n--- end of project conventions ---\n\n")
+		b.WriteString("Those files describe the repository. They are reference, not something to restate or continue — answer whatever is asked, and read them when the question calls for it.\n")
 	}
-	// The conventions are reference, and reference read last is mistaken for
-	// the task: asked whether it speaks French, an agent whose prompt ended on
-	// a list of deploy commands went on writing that list. What it is for
-	// comes after them, so the last thing read is the instruction.
-	b.WriteString("\n--- end of project conventions ---\n\n")
-	b.WriteString("Those files describe the repository. They are reference, not something to restate or continue — answer whatever is asked, and read them when the question calls for it.\n")
+
+	if section := projectMemory(opts.Root, opts.RecentSessions); section != "" {
+		b.WriteString(section)
+	}
+
+	if len(found) == 0 && b.Len() == len(base) {
+		return base, nil
+	}
 	return b.String(), nil
+}
+
+// projectMemory renders what past runs on root established: decisions and
+// constraints extracted at compaction time, carried forward across
+// sessions, plus a short trail of what recent sessions touched. It never
+// fails the caller — a project with no memory yet, or a memory file this
+// process cannot read, just yields no section.
+func projectMemory(root string, recentSessions int) string {
+	var b strings.Builder
+
+	if mem, err := memory.Load(root, 0); err == nil && !mem.IsEmpty() {
+		b.WriteString("\n\n## Project memory\n\n")
+		b.WriteString("Established in earlier sessions on this project. Treat decisions as settled and constraints as still true unless the current conversation says otherwise.\n\n")
+		b.WriteString(mem.Render())
+	}
+
+	if recentSessions > 0 {
+		if summaries, err := session.ListForRoot(root, recentSessions); err == nil && len(summaries) > 0 {
+			if b.Len() == 0 {
+				b.WriteString("\n\n## Project memory\n\n")
+			} else {
+				b.WriteString("\n")
+			}
+			b.WriteString("Recent sessions on this project:\n")
+			for _, s := range summaries {
+				fmt.Fprintf(&b, "- %s: %s", s.Started.Format("2006-01-02"), oneLine(s.Prompt))
+				if len(s.Touched) > 0 {
+					fmt.Fprintf(&b, " (touched %s)", strings.Join(s.Touched, ", "))
+				}
+				b.WriteByte('\n')
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// oneLine collapses a session's opening prompt to something that fits a
+// listing line; a multi-paragraph task statement would otherwise dominate
+// the section it is meant to summarise in one line.
+func oneLine(s string) string {
+	s = strings.TrimSpace(strings.SplitN(s, "\n", 2)[0])
+	const maxLen = 120
+	if len(s) > maxLen {
+		s = s[:maxLen] + "…"
+	}
+	return s
 }
 
 // Workspace renders the volatile facts about the repository: where it is,

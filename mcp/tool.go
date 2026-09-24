@@ -19,12 +19,17 @@ type listToolsResult struct {
 	Tools []toolDescriptor `json:"tools"`
 }
 
+// textContent is one block of a tool result. The spec allows images and
+// resources too; a part with no text form is reported as its type rather
+// than dropped silently.
+type textContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 type callToolResult struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	IsError bool `json:"isError"`
+	Content []textContent `json:"content"`
+	IsError bool          `json:"isError"`
 }
 
 // ListTools returns the server's tools, adapted to the agent's interface.
@@ -39,7 +44,7 @@ func (c *Client) ListTools(ctx context.Context) ([]agent.Tool, error) {
 	}
 	var result listToolsResult
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("mcp %s: decode tools/list: %w", c.cfg.Name, err)
+		return nil, fmt.Errorf("mcp %s: decode tools/list: %w", c.Name(), err)
 	}
 
 	out := make([]agent.Tool, 0, len(result.Tools))
@@ -55,7 +60,7 @@ type remoteTool struct {
 }
 
 func (t *remoteTool) Name() string {
-	return t.client.cfg.Name + "__" + t.descriptor.Name
+	return t.client.Name() + "__" + t.descriptor.Name
 }
 
 func (t *remoteTool) Description() string {
@@ -63,7 +68,7 @@ func (t *remoteTool) Description() string {
 	if desc == "" {
 		desc = "No description was provided by the server."
 	}
-	return fmt.Sprintf("%s\n\n(Provided by the %q MCP server.)", desc, t.client.cfg.Name)
+	return fmt.Sprintf("%s\n\n(Provided by the %q MCP server.)", desc, t.client.Name())
 }
 
 // InputSchema returns the schema the server published.
@@ -99,7 +104,7 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (agent.T
 		// ending the run.
 		return agent.ToolResult{
 			Content:  "error: " + err.Error(),
-			Metadata: map[string]any{"ok": false, "server": t.client.cfg.Name},
+			Metadata: map[string]any{"ok": false, "server": t.client.Name()},
 		}, nil
 	}
 
@@ -133,7 +138,7 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (agent.T
 		Content: content,
 		Metadata: map[string]any{
 			"ok":     !result.IsError,
-			"server": t.client.cfg.Name,
+			"server": t.client.Name(),
 			"tool":   t.descriptor.Name,
 		},
 	}, nil

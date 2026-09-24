@@ -51,6 +51,11 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	// RoleMemory marks a message the compactor pinned: structured decisions,
+	// constraints and facts extracted from turns it summarised away. It is
+	// only meaningful within the agent package — the wire layer sends it as
+	// RoleUser, since no provider has a "memory" role.
+	RoleMemory Role = "memory"
 )
 
 // Message is one entry in the conversation history.
@@ -100,6 +105,10 @@ type ToolCallTrace struct {
 	Result     string
 	DurationMs int64
 	Err        string
+	// Metadata carries a tool's ToolResult.Metadata through to Callback, for a
+	// caller that renders something richer than the result text (a card
+	// linking to what the tool acted on).
+	Metadata map[string]any
 }
 
 // Result is the outcome of a Run.

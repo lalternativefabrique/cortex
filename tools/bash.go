@@ -25,12 +25,36 @@ type BashConfig struct {
 	// OnLine receives output as it is produced, for live display. The
 	// captured output is returned to the model regardless.
 	OnLine sandbox.LineFunc
+	// Workstation is true when this runs against a repository an operator
+	// opened on their own machine — where a local sklp stack and a kubeconfig
+	// may exist. False for an ephemeral task clone on a server, where neither
+	// does. Only changes what Description() says is available.
+	Workstation bool
 }
 
 const (
 	DefaultBashTimeout     = 2 * time.Minute
 	DefaultBashOutputBytes = 6000
 )
+
+// sklpDescription explains the sklp workflow on a workstation, and says
+// plainly that it does not apply on an ephemeral task clone, where there is
+// no local stack and no operator to ask before touching one.
+func (c BashConfig) sklpDescription() string {
+	if !c.Workstation {
+		return "This is an ephemeral clone of a repository, not an operator's workstation: there is no local `sklp dev` stack running here and no `sklp flow` branch to open. `sklp` commands that read repository-local state (issues, docs) still work; anything that assumes a running stack or a person to ask does not."
+	}
+	return "This repository is driven by `sklp`. Read its state to diagnose a failure — `sklp deploy logs <service>` for what a service printed, `sklp deploy ls` for what is running, `sklp cache status` for disk. Track work with `sklp issue list|show|new|edit|status`, which is where this project keeps its tickets — it needs --project or --stack unless SKLP_PROJECT is set, and says so. `sklp flow start <name>` opens a branch; `sklp flow end` pushes and opens a pull request, and always asks first whatever the mode, because a PR is public and carries the operator's name.\n\nThe local stack runs under `sklp dev <stack>`, which holds the terminal until stopped — never start one here, it would hold this call until the timeout. `sklp dev down` stops a stack started in another terminal, and `sklp dev --validate` checks the configuration without launching anything. Starting or stopping a stack, running a pipeline and cleaning caches all ask first: it is the operator's working environment, and they may be using it. To find out whether something is up, probe it (`curl -sf http://127.0.0.1:4100/...`) rather than reading the exit code of a kill."
+}
+
+// clusterDescription explains kubectl/helm/docker on a workstation, and says
+// plainly that no cluster context exists on an ephemeral task clone.
+func (c BashConfig) clusterDescription() string {
+	if !c.Workstation {
+		return "kubectl, helm and docker binaries are present, but no cluster context is configured here — this is an ephemeral clone with no kubeconfig. Do not attempt to reach a cluster from this run."
+	}
+	return "kubectl, helm and docker binaries are present, and a cluster context may be configured — check with `kubectl config current-context` before relying on one rather than assuming it is there. When it is, their reading verbs run like any other inspection; the destructive ones are refused in every mode, because a cluster is not the workspace and no git checkout undoes a deleted deployment."
+}
 
 type bashArgs struct {
 	Command string `json:"command" jsonschema:"description=Shell command line to run. Pipes, redirections and && are interpreted."`
@@ -79,11 +103,11 @@ func (t *bashTool) Description() string {
 		fmt.Sprintf("Returns the exit code, then stderr, then stdout — each capped at about %d bytes with the middle dropped when longer. When that happens the whole output is written to a file and its path named in the result: read or grep that file rather than re-running the command with narrower flags. A non-zero exit is a normal result, not an error: read the output and decide what to do.", DefaultBashOutputBytes),
 		"Re-running a command that already failed unchanged is refused; change something or move on.",
 		"",
-		"This repository is driven by `sklp`. Read its state to diagnose a failure — `sklp deploy logs <service>` for what a service printed, `sklp deploy ls` for what is running, `sklp cache status` for disk. Track work with `sklp issue list|show|new|edit|status`, which is where this project keeps its tickets — it needs --project or --stack unless SKLP_PROJECT is set, and says so. `sklp flow start <name>` opens a branch; `sklp flow end` pushes and opens a pull request, and always asks first whatever the mode, because a PR is public and carries the operator's name.",
+		t.cfg.sklpDescription(),
 		"",
-		"The local stack runs under `sklp dev <stack>`, which holds the terminal until stopped — never start one here, it would hold this call until the timeout. `sklp dev down` stops a stack started in another terminal, and `sklp dev --validate` checks the configuration without launching anything. Starting or stopping a stack, running a pipeline and cleaning caches all ask first: it is the operator's working environment, and they may be using it. To find out whether something is up, probe it (`curl -sf http://127.0.0.1:4100/...`) rather than reading the exit code of a kill.",
+		t.cfg.clusterDescription(),
 		"",
-		"kubectl, helm and docker are available. Their reading verbs run like any other inspection; the destructive ones are refused in every mode, because a cluster is not the workspace and no git checkout undoes a deleted deployment. Check which context you are pointed at before acting on one.",
+		"jq and gdu are also available. Pipe JSON output (API responses, config files, or kubectl -o json when a cluster context is configured) through jq to extract the field you need instead of reading the whole blob. Use gdu -np <path> for disk usage instead of du when checking what is filling a volume or cache.",
 		"",
 		"Does not return: anything written to files, the state of background processes, or output produced after the timeout. Never start a long-running server here — it will hold the call until it is killed.",
 	}, "\n")

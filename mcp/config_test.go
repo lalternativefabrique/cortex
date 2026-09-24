@@ -75,6 +75,32 @@ func TestLoadConfigRejectsServerWithoutCommand(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAcceptsAURLOnlyServer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"),
+		"servers:\n  - name: synthiz-rag\n    url: https://synthiz.internal/mcp\n")
+
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Servers) != 1 || cfg.Servers[0].URL != "https://synthiz.internal/mcp" {
+		t.Fatalf("servers = %+v", cfg.Servers)
+	}
+}
+
+func TestLoadConfigRejectsAServerWithBothCommandAndURL(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"),
+		"servers:\n  - name: ambiguous\n    command: mcp-x\n    url: https://example.test/mcp\n")
+
+	if _, err := LoadConfig(root); err == nil {
+		t.Fatal("a server naming both a command and a url was accepted")
+	}
+}
+
 func TestLoadConfigReportsMalformedYAML(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	root := t.TempDir()

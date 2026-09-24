@@ -26,7 +26,7 @@ func TestSummaryCompactorKeepsTaskAndRecentTurns(t *testing.T) {
 	c := &SummaryCompactor{Client: client, KeepRecent: 4, KeepFirst: 1}
 
 	in := longHistory(10)
-	out, err := c.Compact(context.Background(), "sys", in)
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestSummaryCompactorLeavesShortHistoryAlone(t *testing.T) {
 	c := &SummaryCompactor{Client: client, KeepRecent: 6, KeepFirst: 1}
 
 	in := longHistory(2)
-	out, err := c.Compact(context.Background(), "sys", in)
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestSummaryCompactorDropsOrphanToolMessages(t *testing.T) {
 		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "orphan", Name: "bash"}}},
 		{Role: RoleTool, ToolCallID: "orphan", Content: "result"},
 	}
-	out, err := c.Compact(context.Background(), "sys", in)
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestSummaryCompactorDropsOrphanToolMessages(t *testing.T) {
 func TestSummaryCompactorFailsWhenModelReturnsNothing(t *testing.T) {
 	client := &scriptedClient{responses: []CompletionResponse{{Text: "   "}}}
 	c := &SummaryCompactor{Client: client, KeepRecent: 2, KeepFirst: 1}
-	if _, err := c.Compact(context.Background(), "sys", longHistory(10)); err == nil {
+	if _, _, _, err := c.Compact(context.Background(), "sys", longHistory(10)); err == nil {
 		t.Fatal("an empty summary was accepted, which would silently erase the history")
 	}
 }
@@ -155,17 +155,52 @@ func TestRunSurvivesCompactionFailure(t *testing.T) {
 	}
 }
 
+// stubCompactUsage is what the stub reports the summarisation itself cost, so
+// a test can tell an accounted compaction from an ignored one.
+var stubCompactUsage = Usage{Input: 500, Output: 50}
+
 type stubCompactor struct{}
 
-func (stubCompactor) Compact(_ context.Context, _ string, messages []Message) ([]Message, error) {
+func (stubCompactor) Compact(_ context.Context, _ string, messages []Message) ([]Message, *MemoryExtraction, Usage, error) {
 	if len(messages) <= 2 {
-		return messages, nil
+		return messages, nil, Usage{}, nil
 	}
-	return []Message{messages[0], {Role: RoleUser, Content: "[compacted]"}}, nil
+	return []Message{messages[0], {Role: RoleUser, Content: "[compacted]"}}, nil, stubCompactUsage, nil
 }
 
 type failingCompactor struct{}
 
-func (failingCompactor) Compact(context.Context, string, []Message) ([]Message, error) {
-	return nil, context.DeadlineExceeded
+func (failingCompactor) Compact(context.Context, string, []Message) ([]Message, *MemoryExtraction, Usage, error) {
+	return nil, nil, Usage{}, context.DeadlineExceeded
+}
+
+// Compacting is itself a model call, on the whole stretch being summarised.
+// Leaving its tokens out of the run's Usage understates exactly the long
+// conversations that cost the most — and the provider still bills them.
+func TestRunAccountsForWhatCompactionItselfSpent(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: strings.Repeat("noise\n", 500)}
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{looping, looping, looping, {Text: "done"}}}
+	r, err := NewRunner(Config{
+		Client:        client,
+		Tools:         []Tool{tool},
+		MaxSteps:      6,
+		ContextWindow: 2000,
+		Compactor:     &stubCompactor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Compactions == 0 {
+		t.Fatal("history grew past the window without compacting")
+	}
+	wantInput := stubCompactUsage.Input * res.Compactions
+	if res.Usage.Input < wantInput {
+		t.Errorf("usage.Input = %d, want at least %d from %d compaction(s)",
+			res.Usage.Input, wantInput, res.Compactions)
+	}
 }

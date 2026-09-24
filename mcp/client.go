@@ -2,20 +2,23 @@
 // external servers — a database, an issue tracker, a browser — can be handed
 // to the agent alongside the built-in ones.
 //
-// MCP is JSON-RPC 2.0 over stdio: the client spawns the server as a
-// subprocess and exchanges newline-delimited JSON on its pipes.
+// Two transports are supported. A local server (ServerConfig.Command set)
+// is JSON-RPC 2.0 over stdio: the client spawns it as a subprocess and
+// exchanges newline-delimited JSON on its pipes. A remote server
+// (ServerConfig.URL set) is JSON-RPC 2.0 over HTTP: one POST per call,
+// stateless, matching digstack/synthiz's apps/core/mcpserver — the only HTTP
+// MCP server in the group as of this package's writing. Exactly one of
+// Command or URL must be set; the transport built from a ServerConfig is
+// otherwise identical to its caller, since everything above call/notify in
+// this package (tool.go, config.go) never touches the transport directly.
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"sync"
 	"time"
 )
 
@@ -24,17 +27,36 @@ import (
 // the field is sent because the handshake requires it.
 const ProtocolVersion = "2024-11-05"
 
-// ServerConfig describes how to launch one MCP server.
+// ServerConfig describes how to reach one MCP server — exactly one of
+// Command (stdio, a local subprocess) or URL (HTTP, a remote server) must be
+// set.
 type ServerConfig struct {
-	Name    string            `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+
+	// Command, Args and Env launch a local server over stdio. Command is
+	// empty for a remote server.
 	Command string            `yaml:"command" json:"command"`
 	Args    []string          `yaml:"args" json:"args"`
 	Env     map[string]string `yaml:"env" json:"env"`
+
+	// URL reaches a remote server over HTTP: one POST per JSON-RPC call,
+	// stateless (see synthiz's apps/core/mcpserver). Empty for a local
+	// server.
+	//
+	// Deliberately the only field an HTTP server carries here — no header,
+	// no bearer token. synthiz's own server takes no transport-level auth at
+	// all: whatever a tool call needs to authenticate as (a grant, a scoped
+	// token) is a tool ARGUMENT the caller supplies per call, not something
+	// this generic transport understands. A registry entry that wanted to
+	// inject a fixed secret into every call would defeat the point of a
+	// grant that expires in five minutes.
+	URL string `yaml:"url" json:"url"`
+
 	// Timeout caps a single request. Zero means DefaultRequestTimeout.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
-	// Stderr receives the server's diagnostics. Nil sends them to the
+	// Stderr receives a local server's diagnostics. Nil sends them to the
 	// process's own stderr, which suits a CLI; a service handling several
-	// runs at once wants them separated per run.
+	// runs at once wants them separated per run. Unused for a remote server.
 	Stderr io.Writer `yaml:"-" json:"-"`
 }
 
@@ -42,9 +64,12 @@ const DefaultRequestTimeout = 60 * time.Second
 
 type request struct {
 	JSONRPC string `json:"jsonrpc"`
-	ID      int64  `json:"id,omitempty"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
+	// ID is a pointer so a notification (Method with no reply expected) can
+	// omit it entirely — omitempty on an int64 would instead send 0, which
+	// synthiz's server (and the spec) reads as a real request id.
+	ID     *int64 `json:"id,omitempty"`
+	Method string `json:"method"`
+	Params any    `json:"params,omitempty"`
 }
 
 type response struct {
@@ -61,66 +86,57 @@ type rpcError struct {
 
 func (e *rpcError) Error() string { return fmt.Sprintf("mcp error %d: %s", e.Code, e.Message) }
 
-// Client is a connection to one MCP server.
-type Client struct {
-	cfg    ServerConfig
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-
-	mu      sync.Mutex
-	nextID  int64
-	pending map[int64]chan response
-
-	closeOnce sync.Once
-	closed    chan struct{}
-	readErr   error
+// transport is what a Client needs from either wire format: send a request
+// expecting a reply, send one that expects none, and shut down. Nothing
+// above this in the package (tool.go, config.go) knows which one it is
+// talking to.
+type transport interface {
+	call(ctx context.Context, method string, params any) (json.RawMessage, error)
+	notify(ctx context.Context, method string, params any) error
+	close() error
 }
 
-// Connect launches the server and completes the initialize handshake.
-func Connect(ctx context.Context, cfg ServerConfig) (*Client, error) {
-	if cfg.Command == "" {
-		return nil, errors.New("mcp: Command is required")
+// Client is a connection to one MCP server, over whichever transport its
+// ServerConfig named.
+type Client struct {
+	cfg cfg
+	t   transport
+}
+
+// cfg is the subset of ServerConfig a Client still needs after connecting —
+// kept separate so transport-specific fields (Command, Args, Env, URL) stay
+// out of code that only ever wants the name.
+type cfg struct {
+	name    string
+	timeout time.Duration
+}
+
+// Connect reaches the server — spawning it for a local (Command) config,
+// dialing it for a remote (URL) one — and completes the initialize
+// handshake.
+func Connect(ctx context.Context, sc ServerConfig) (*Client, error) {
+	if sc.Command == "" && sc.URL == "" {
+		return nil, errors.New("mcp: one of Command or URL is required")
 	}
-	if cfg.Timeout == 0 {
-		cfg.Timeout = DefaultRequestTimeout
+	if sc.Command != "" && sc.URL != "" {
+		return nil, errors.New("mcp: Command and URL are mutually exclusive")
+	}
+	if sc.Timeout == 0 {
+		sc.Timeout = DefaultRequestTimeout
 	}
 
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Env = os.Environ()
-	for k, v := range cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	// A server that fails to start explains itself there, so the stream is
-	// forwarded rather than discarded.
-	if cfg.Stderr != nil {
-		cmd.Stderr = cfg.Stderr
+	var t transport
+	var err error
+	if sc.Command != "" {
+		t, err = newStdioTransport(sc)
 	} else {
-		cmd.Stderr = os.Stderr
+		t = newHTTPTransport(sc)
 	}
-
-	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("mcp %s: stdin: %w", cfg.Name, err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("mcp %s: stdout: %w", cfg.Name, err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("mcp %s: start %q: %w", cfg.Name, cfg.Command, err)
+		return nil, err
 	}
 
-	c := &Client{
-		cfg:     cfg,
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  bufio.NewReaderSize(stdout, 1024*1024),
-		pending: map[int64]chan response{},
-		closed:  make(chan struct{}),
-	}
-	go c.readLoop()
-
+	c := &Client{cfg: cfg{name: sc.Name, timeout: sc.Timeout}, t: t}
 	if err := c.handshake(ctx); err != nil {
 		c.Close()
 		return nil, err
@@ -135,131 +151,33 @@ func (c *Client) handshake(ctx context.Context) error {
 		"clientInfo":      map[string]any{"name": "skode", "version": "0.1.0"},
 	})
 	if err != nil {
-		return fmt.Errorf("mcp %s: initialize: %w", c.cfg.Name, err)
+		return fmt.Errorf("mcp %s: initialize: %w", c.cfg.name, err)
 	}
 	// The spec requires this notification before any other request; servers
 	// that enforce it reject tools/list without it.
-	return c.notify("notifications/initialized", map[string]any{})
-}
-
-// readLoop dispatches responses to whoever is waiting for that id.
-func (c *Client) readLoop() {
-	defer close(c.closed)
-	for {
-		line, err := c.stdout.ReadBytes('\n')
-		if len(line) > 0 {
-			var resp response
-			if err := json.Unmarshal(line, &resp); err == nil && resp.ID != 0 {
-				c.deliver(resp)
-			}
-			// A line that is not a response to something we asked is a
-			// notification or a log; the client has no use for either.
-		}
-		if err != nil {
-			c.mu.Lock()
-			c.readErr = err
-			for id, ch := range c.pending {
-				close(ch)
-				delete(c.pending, id)
-			}
-			c.mu.Unlock()
-			return
-		}
-	}
-}
-
-func (c *Client) deliver(resp response) {
-	c.mu.Lock()
-	ch, ok := c.pending[resp.ID]
-	if ok {
-		delete(c.pending, resp.ID)
-	}
-	c.mu.Unlock()
-	if ok {
-		ch <- resp
-		close(ch)
-	}
+	return c.notify(ctx, "notifications/initialized", map[string]any{})
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	cctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	cctx, cancel := context.WithTimeout(ctx, c.cfg.timeout)
 	defer cancel()
-
-	c.mu.Lock()
-	if c.readErr != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("mcp %s: connection closed: %w", c.cfg.Name, c.readErr)
-	}
-	c.nextID++
-	id := c.nextID
-	ch := make(chan response, 1)
-	c.pending[id] = ch
-	c.mu.Unlock()
-
-	if err := c.write(request{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
-		return nil, err
-	}
-
-	select {
-	case <-cctx.Done():
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
-		return nil, fmt.Errorf("mcp %s: %s timed out after %s", c.cfg.Name, method, c.cfg.Timeout)
-	case resp, ok := <-ch:
-		if !ok {
-			return nil, fmt.Errorf("mcp %s: server exited during %s", c.cfg.Name, method)
-		}
-		if resp.Error != nil {
-			return nil, resp.Error
-		}
-		return resp.Result, nil
-	}
-}
-
-// notify sends a request that expects no reply.
-func (c *Client) notify(method string, params any) error {
-	return c.write(request{JSONRPC: "2.0", Method: method, Params: params})
-}
-
-func (c *Client) write(r request) error {
-	line, err := json.Marshal(r)
+	raw, err := c.t.call(cctx, method, params)
 	if err != nil {
-		return fmt.Errorf("mcp %s: encode %s: %w", c.cfg.Name, r.Method, err)
+		return nil, fmt.Errorf("mcp %s: %s: %w", c.cfg.name, method, err)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, err := c.stdin.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("mcp %s: write %s: %w", c.cfg.Name, r.Method, err)
+	return raw, nil
+}
+
+func (c *Client) notify(ctx context.Context, method string, params any) error {
+	if err := c.t.notify(ctx, method, params); err != nil {
+		return fmt.Errorf("mcp %s: %s: %w", c.cfg.name, method, err)
 	}
 	return nil
 }
 
-// Close shuts the server down.
-func (c *Client) Close() error {
-	c.closeOnce.Do(func() {
-		c.stdin.Close()
-		// Give the server a moment to exit on its closed stdin before
-		// killing it, so it can flush and clean up.
-		done := make(chan struct{})
-		go func() {
-			c.cmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			if c.cmd.Process != nil {
-				c.cmd.Process.Kill()
-			}
-			<-done
-		}
-	})
-	return nil
-}
+// Close shuts the connection down — killing the subprocess for a local
+// server, releasing the HTTP client's resources for a remote one.
+func (c *Client) Close() error { return c.t.close() }
 
 // Name is the server's configured name.
-func (c *Client) Name() string { return c.cfg.Name }
+func (c *Client) Name() string { return c.cfg.name }

@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/lalternative/packages/go/cortex/agent"
 	"gopkg.in/yaml.v3"
+	"github.com/lalternative/packages/go/cortex/agent"
 )
 
 // Config is the on-disk list of servers to launch.
@@ -66,8 +66,11 @@ func readConfig(path string) (Config, error) {
 		if s.Name == "" {
 			return c, fmt.Errorf("%s: server %d has no name", path, i+1)
 		}
-		if s.Command == "" {
-			return c, fmt.Errorf("%s: server %q has no command", path, s.Name)
+		if s.Command == "" && s.URL == "" {
+			return c, fmt.Errorf("%s: server %q has neither a command nor a url", path, s.Name)
+		}
+		if s.Command != "" && s.URL != "" {
+			return c, fmt.Errorf("%s: server %q has both a command and a url", path, s.Name)
 		}
 	}
 	return c, nil
@@ -87,7 +90,17 @@ func Start(ctx context.Context, cfg Config, onError func(error)) (*Session, []ag
 	s := &Session{}
 	var tools []agent.Tool
 
+	// The repo config and the operator's own can both name the same server
+	// — a workspace declaring what it needs is not expected to know what
+	// the operator already has globally. The first one wins rather than
+	// starting the same subprocess, and its tools, twice.
+	seen := map[string]bool{}
 	for _, sc := range cfg.Servers {
+		if seen[sc.Name] {
+			continue
+		}
+		seen[sc.Name] = true
+
 		client, err := Connect(ctx, sc)
 		if err != nil {
 			if onError != nil {

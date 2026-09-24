@@ -8,10 +8,19 @@ import (
 	"github.com/lalternative/packages/go/cortex/agent"
 )
 
-// Describer turns an image into text. vision.Describer implements it.
+// Describer turns an image into text.
 type Describer interface {
 	Describe(ctx context.Context, path, question string) (string, error)
 	Model() string
+}
+
+// BytesDescriber describes an image the host holds in memory rather than one
+// in the workspace — a screenshot pasted into the window, which has no path.
+// A Describer that cannot do this simply does not implement it, and the host
+// leaves the endpoint out.
+type BytesDescriber interface {
+	Describer
+	DescribeBytes(ctx context.Context, data []byte, mime, question string) (string, error)
 }
 
 // ImageConfig configures the describe_image tool.

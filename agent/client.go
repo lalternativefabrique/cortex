@@ -223,6 +223,15 @@ func (c *httpClient) Complete(ctx context.Context, req CompletionRequest) (Compl
 	return CompletionResponse{}, fmt.Errorf("after %d retries: %w", c.provider.MaxRetries, lastErr)
 }
 
+// wireRole maps a Role to what the provider accepts. RoleMemory is an
+// in-process marker with no equivalent on the wire.
+func wireRole(r Role) Role {
+	if r == RoleMemory {
+		return RoleUser
+	}
+	return r
+}
+
 func (c *httpClient) buildPayload(req CompletionRequest) (wireRequest, error) {
 	msgs := make([]wireMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
@@ -230,7 +239,7 @@ func (c *httpClient) buildPayload(req CompletionRequest) (wireRequest, error) {
 	}
 	for _, m := range req.Messages {
 		wm := wireMessage{
-			Role:       string(m.Role),
+			Role:       string(wireRole(m.Role)),
 			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
 		}
@@ -370,12 +379,12 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	// A 401 is nearly always a missing or wrong key, and the provider's own
-	// JSON says less about that than naming the setting does.
+	// JSON says less about that than saying so.
 	if e.StatusCode == http.StatusUnauthorized {
 		if e.hadKey {
-			return "the API key was rejected: check SKODE_API_KEY, or -api-key"
+			return "the model endpoint rejected the provider's API key"
 		}
-		return "no API key is set: export SKODE_API_KEY, or pass -api-key"
+		return "the provider has no API key, and the model endpoint requires one"
 	}
 	return fmt.Sprintf("provider returned %d: %s", e.StatusCode, truncateForError(e.Body))
 }

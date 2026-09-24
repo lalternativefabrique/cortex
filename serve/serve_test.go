@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -12,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/vision"
 )
 
 func newServer(t *testing.T, token string) http.Handler {
@@ -312,12 +312,12 @@ func TestTheImageToolIsOfferedOnlyWithAVisionModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if named(plain.tools, "describe_image") {
-		t.Fatal("the image tool was offered with no vision model set")
+		t.Fatal("the image tool was offered with no describer")
 	}
 
 	seeing, err := New(Config{
-		Root:   t.TempDir(),
-		Vision: vision.Config{BaseURL: "https://example.test/v1", APIKey: "k", Model: "pixtral"},
+		Root:      t.TempDir(),
+		Describer: stubDescriber{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -424,3 +424,14 @@ func TestTheDiffOfACleanTreeSaysSo(t *testing.T) {
 		t.Fatalf("diff = %+v, want clean", diff)
 	}
 }
+
+// stubDescriber stands in for whatever the host wires: the server offers
+// describe_image because a capability is present, not because a particular
+// vision service is.
+type stubDescriber struct{}
+
+func (stubDescriber) Describe(context.Context, string, string) (string, error) {
+	return "a picture", nil
+}
+
+func (stubDescriber) Model() string { return "stub" }

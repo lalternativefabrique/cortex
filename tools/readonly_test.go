@@ -2,50 +2,36 @@ package tools
 
 import "testing"
 
-func TestPlanModeAllowsInspection(t *testing.T) {
-	// Plan means look but do not touch, not do nothing: refusing a read
-	// costs a step and teaches the model nothing.
-	g := &GatedApprover{Mode: ModePlan, Ask: &recordingApprover{decision: Deny}}
+func TestInspectionCommandsAreReadOnly(t *testing.T) {
 	for _, line := range []string{
 		`grep -n "func add" main.go`,
 		"cd /tmp && ls -la",
 		"git status",
 		"go vet ./...",
 	} {
-		if decide(t, g, bashReq(line)) != Allow {
-			t.Errorf("%q reads only and should run in plan mode", line)
+		if !isReadOnlyCommand(line) {
+			t.Errorf("%q reads only and should qualify", line)
 		}
-	}
-}
-
-func TestPlanModeStillRefusesWrites(t *testing.T) {
-	g := &GatedApprover{
-		Mode:  ModePlan,
-		Root:  "/w",
-		Rules: Rules{AllowWrite: []string{"**/*.go"}},
-		Ask:   &recordingApprover{decision: Allow},
-	}
-	// An allow_write glob must not open a hole in a read-only run.
-	if decide(t, g, Request{Tool: "edit", Scope: "edit:/w/a.go"}) != Deny {
-		t.Fatal("plan mode allowed an edit through allow_write")
-	}
-	if decide(t, g, bashReq("rm -f x")) != Deny {
-		t.Fatal("plan mode allowed a mutating command")
 	}
 }
 
 func TestWriteFlagsDisqualifyAReadCommand(t *testing.T) {
-	g := &GatedApprover{Mode: ModeAuto, Ask: &recordingApprover{decision: Deny}}
 	for _, line := range []string{
 		"find . -name '*.tmp' -delete",
 		"sed -i s/a/b/ file.go",
 	} {
-		if decide(t, g, bashReq(line)) == Allow {
+		if isReadOnlyCommand(line) {
 			t.Errorf("%q writes despite a harmless leading word", line)
 		}
 	}
-	if decide(t, g, bashReq("sed -n 1,20p file.go")) != Allow {
+	if !isReadOnlyCommand("sed -n 1,20p file.go") {
 		t.Error("sed -n only prints and should pass")
+	}
+}
+
+func TestRedirectionDisqualifiesAReadCommand(t *testing.T) {
+	if isReadOnlyCommand("cat a.go > b.go") {
+		t.Error("a redirection writes whatever produced the bytes")
 	}
 }
 

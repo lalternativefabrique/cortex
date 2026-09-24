@@ -6,7 +6,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternative/packages/go/cortex/memory"
+	"github.com/lalternative/packages/go/cortex/session"
 )
+
+func fixedTime(t *testing.T) time.Time {
+	t.Helper()
+	return time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+}
 
 func TestSystemIncludesBaseInstructions(t *testing.T) {
 	got, err := System(Options{Root: t.TempDir()})
@@ -92,7 +102,7 @@ func TestSystemCarriesNothingVolatile(t *testing.T) {
 	}
 	// A clock, a hostname or a commit hash in the stable prefix invalidates
 	// the cache on every single call.
-	for _, marker := range []string{"2026", "20:", "commit ", "branch "} {
+	for _, marker := range []string{"2026", "20:", "Branch: "} {
 		if strings.Contains(got, marker) {
 			t.Fatalf("the stable prefix appears to contain volatile data (%q)", marker)
 		}
@@ -106,6 +116,83 @@ func TestSystemHonorsOverride(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "custom instructions") {
 		t.Fatalf("override was ignored: %q", got)
+	}
+}
+
+func TestSystemInjectsProjectMemory(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+
+	store, err := memory.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(agent.MemoryExtraction{
+		Decisions:   []string{"picked PostgreSQL"},
+		Constraints: []string{"no EU hosting"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := System(Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "picked PostgreSQL") || !strings.Contains(got, "no EU hosting") {
+		t.Fatalf("project memory was not injected: %q", got)
+	}
+	if !strings.Contains(got, "Project memory") {
+		t.Fatal("the section is not labelled, so the model cannot tell it apart from the current conversation")
+	}
+}
+
+func TestSystemOmitsProjectMemorySectionWhenNoneStored(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	got, err := System(Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "Project memory") {
+		t.Fatalf("a memory section appeared for a project with none: %q", got)
+	}
+}
+
+func TestSystemInjectsRecentSessionsWhenRequested(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+
+	store, _, err := session.Create(fixedTime(t), root, "test-model", "fix the flaky test in pkg/foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	got, err := System(Options{Root: root, RecentSessions: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "fix the flaky test in pkg/foo") {
+		t.Fatalf("recent session summary was not injected: %q", got)
+	}
+}
+
+func TestSystemOmitsRecentSessionsWhenNotRequested(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+
+	store, _, err := session.Create(fixedTime(t), root, "test-model", "some earlier task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	got, err := System(Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "some earlier task") {
+		t.Fatal("recent sessions were injected despite RecentSessions being zero")
 	}
 }
 

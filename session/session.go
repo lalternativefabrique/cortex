@@ -275,6 +275,17 @@ type Summary struct {
 
 // List returns stored sessions, most recent first.
 func List(limit int) ([]Summary, error) {
+	return ListForRoot("", limit)
+}
+
+// ListForRoot returns stored sessions on root, most recent first. An empty
+// root returns every stored session, unfiltered.
+//
+// Matching is by exact root rather than by project key: sessions predate
+// project keying, and a worktree-per-feature checkout is itself a distinct
+// piece of work worth telling apart from the main checkout it branched from,
+// not merged into one undifferentiated project history.
+func ListForRoot(root string, limit int) ([]Summary, error) {
 	dir, err := Dir()
 	if err != nil {
 		return nil, err
@@ -291,6 +302,9 @@ func List(limit int) ([]Summary, error) {
 		}
 		s, err := readHeader(filepath.Join(dir, e.Name()))
 		if err != nil {
+			continue
+		}
+		if root != "" && s.Root != root {
 			continue
 		}
 		out = append(out, s)
