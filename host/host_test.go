@@ -7,8 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lalternative/packages/go/cortex/agent"
@@ -314,4 +317,56 @@ func TestATurnsContextJoinsTheInstructionsForThatTurnOnly(t *testing.T) {
 	if strings.Contains((*bodies)[1], "Le web est autorisé") {
 		t.Fatal("a turn's context stayed for the next one")
 	}
+}
+
+func TestAServerDownAtStartIsReachedByALaterTurn(t *testing.T) {
+	provider, _ := fakeModel(t, "corpus__search")
+	mcpURL, auths := fakeMCP(t)
+	var up atomic.Bool
+	booting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.Error(w, "starting", http.StatusServiceUnavailable)
+			return
+		}
+		httputil.NewSingleHostReverseProxy(mustParse(t, mcpURL)).ServeHTTP(w, r)
+	}))
+	t.Cleanup(booting.Close)
+
+	h, err := New(context.Background(), Config{
+		Agent:    Agent{Name: "cerveau"},
+		Provider: provider,
+		MCP:      mcp.Config{Servers: []mcp.ServerConfig{{Name: "corpus", URL: booting.URL}}},
+		Token:    "tok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	h.servers.retry = 0
+	if len(h.Card().Skills) != 0 {
+		t.Fatalf("skills while the server is down: %+v", h.Card().Skills)
+	}
+
+	up.Store(true)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+	readStream(t, rpc(t, srv.URL, "tok", "message/stream", message("quel budget ?", "ctx-late", map[string]any{
+		MCPHeadersKey: map[string]any{"Authorization": "Bearer grant"},
+	})))
+
+	if len(*auths) != 1 {
+		t.Fatalf("the turn made %d calls to the server that came up, want 1", len(*auths))
+	}
+	if skills := h.Card().Skills; len(skills) != 1 || skills[0].ID != "corpus__search" {
+		t.Fatalf("skills once the server is up: %+v", skills)
+	}
+}
+
+func mustParse(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

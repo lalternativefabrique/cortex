@@ -9,7 +9,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -61,8 +60,7 @@ type Config struct {
 
 type Host struct {
 	cfg           Config
-	tools         []agent.Tool
-	mcp           *mcp.Session
+	servers       *servers
 	conversations *conversations
 	handler       http.Handler
 }
@@ -74,25 +72,14 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if strings.TrimSpace(cfg.Provider.BaseURL) == "" {
 		return nil, fmt.Errorf("host: a model endpoint is required")
 	}
-	h := &Host{cfg: cfg, conversations: newConversations(maxConversations)}
-	if len(cfg.MCP.Servers) > 0 {
-		session, tools, err := mcp.Start(ctx, cfg.MCP, func(err error) {
-			slog.Warn("host: mcp server unavailable", "error", err)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("mcp: %w", err)
-		}
-		h.mcp, h.tools = session, tools
-	}
+	h := &Host{cfg: cfg, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
 	h.handler = a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(&executor{host: h}))
 	return h, nil
 }
 
-// Close stops the MCP servers New started.
+// Close stops the MCP servers the host started.
 func (h *Host) Close() {
-	if h.mcp != nil {
-		h.mcp.Close()
-	}
+	h.servers.close()
 }
 
 // Handler serves the Agent Card, /a2a and /health.
@@ -122,10 +109,11 @@ func (h *Host) authorized(next http.Handler) http.Handler {
 }
 
 // Card describes the agent: what it is, where to reach it, and the tools it
-// can call, exactly those its MCP servers offered at start.
+// can call, those its reachable MCP servers offer.
 func (h *Host) Card() a2a.AgentCard {
-	skills := make([]a2a.AgentSkill, 0, len(h.tools)+1)
-	for _, t := range h.tools {
+	tools := h.servers.offered()
+	skills := make([]a2a.AgentSkill, 0, len(tools)+1)
+	for _, t := range tools {
 		skills = append(skills, a2a.AgentSkill{ID: t.Name(), Name: t.Name(), Description: firstLine(t.Description()), Tags: []string{"tool"}})
 	}
 	if h.cfg.Recall != nil {

@@ -42,7 +42,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 
 	h := e.host
-	tools := append([]agent.Tool(nil), h.tools...)
+	tools := h.servers.forTurn()
 	var memory *recall.Recorder
 	if h.cfg.Recall != nil && subject != "" {
 		scope := recall.Scope{Subject: subject, Agent: h.cfg.Agent.Name}
