@@ -68,14 +68,15 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
-	history := append(h.conversations.history(reqCtx.ContextID), asking)
+	conversation := conversationKey(subject, reqCtx.ContextID)
+	history := append(h.conversations.history(conversation), asking)
 	memory.Said(reqCtx.Message.ID, "user", asked)
 
 	res, err := runner.Run(mcp.WithHeaders(ctx, headers), history)
 	if err != nil {
 		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, err.Error())
 	}
-	h.conversations.append(reqCtx.ContextID, asking, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
+	h.conversations.append(conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
 	memory.Said(uuid.NewString(), "assistant", res.Text)
 
 	if err := stream.close(res.Text); err != nil {
