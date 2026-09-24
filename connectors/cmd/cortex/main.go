@@ -95,8 +95,31 @@ func configFromEnv() (host.Config, string, error) {
 		}
 		cfg.MCP = m
 	}
+	servers, err := mcpServersFromEnv(os.Getenv("CORTEX_MCP_SERVERS"))
+	if err != nil {
+		return cfg, "", err
+	}
+	cfg.MCP.Servers = append(cfg.MCP.Servers, servers...)
 	cfg.Recall = recallFromEnv()
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
+}
+
+// mcpServersFromEnv reads remote MCP servers written "name=url,name=url",
+// for a runtime that sets an environment but mounts no file.
+func mcpServersFromEnv(raw string) ([]mcp.ServerConfig, error) {
+	var servers []mcp.ServerConfig
+	for _, entry := range strings.Split(raw, ",") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		name, url, ok := strings.Cut(entry, "=")
+		name, url = strings.TrimSpace(name), strings.TrimSpace(url)
+		if !ok || name == "" || !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")) {
+			return nil, fmt.Errorf("CORTEX_MCP_SERVERS: %q is not name=http(s)://url", strings.TrimSpace(entry))
+		}
+		servers = append(servers, mcp.ServerConfig{Name: name, URL: url})
+	}
+	return servers, nil
 }
 
 // recallFromEnv keeps the agent's memory in lalter when CORTEX_RECALL_URL
