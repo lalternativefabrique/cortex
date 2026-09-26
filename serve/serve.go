@@ -519,6 +519,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		Stream:         true,
 		Callback:       sink,
 		MemoryRecorder: memRecorder,
+		Logger:         slog.Default().With("conversation_id", id),
 	})
 	if err != nil {
 		emit(Event{Kind: "error", Err: err.Error()})

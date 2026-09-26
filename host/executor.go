@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
@@ -27,6 +28,15 @@ type executor struct {
 var _ a2asrv.AgentExecutor = (*executor)(nil)
 
 func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+	subject, headers, turnContext := metadata(reqCtx.Message)
+	log := taskLogger(e.host, reqCtx).With("subject", subject)
+	started := time.Now()
+	log.InfoContext(ctx, "cortex: task started", "resumed", reqCtx.StoredTask != nil)
+	end := func(state a2a.TaskState, why string) error {
+		logTaskEnd(ctx, log, state, why, time.Since(started))
+		return finish(ctx, queue, reqCtx, state, why)
+	}
+
 	if reqCtx.StoredTask == nil {
 		if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateSubmitted, nil)); err != nil {
 			return err
@@ -34,12 +44,12 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 	asked := messageText(reqCtx.Message)
 	if asked == "" {
-		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, "a text message is required")
+		return end(a2a.TaskStateFailed, "a text message is required")
 	}
-	subject, headers, turnContext := metadata(reqCtx.Message)
 	if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateWorking, nil)); err != nil {
 		return err
 	}
+	log.InfoContext(ctx, "cortex: task working")
 
 	h := e.host
 	tools := h.servers.forTurn()
@@ -51,7 +61,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 	client, err := agent.NewClient(h.cfg.Provider)
 	if err != nil {
-		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, err.Error())
+		return end(a2a.TaskStateFailed, err.Error())
 	}
 	stream := &stream{ctx: ctx, queue: queue, task: reqCtx, memory: memory, answer: a2a.NewArtifactID()}
 	runner, err := agent.NewRunner(agent.Config{
@@ -62,9 +72,10 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		ContextWindow: h.cfg.ContextWindow,
 		Stream:        true,
 		Callback:      stream,
+		Logger:        log,
 	})
 	if err != nil {
-		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, err.Error())
+		return end(a2a.TaskStateFailed, err.Error())
 	}
 
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
@@ -74,7 +85,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 
 	res, err := runner.Run(mcp.WithHeaders(ctx, headers), history)
 	if err != nil {
-		return finish(ctx, queue, reqCtx, a2a.TaskStateFailed, err.Error())
+		return end(a2a.TaskStateFailed, err.Error())
 	}
 	h.conversations.append(conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
 	memory.Said(uuid.NewString(), "assistant", res.Text)
@@ -82,11 +93,29 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	if err := stream.close(res.Text); err != nil {
 		return err
 	}
-	return finish(ctx, queue, reqCtx, a2a.TaskStateCompleted, "")
+	return end(a2a.TaskStateCompleted, "")
 }
 
 func (e *executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+	taskLogger(e.host, reqCtx).InfoContext(ctx, "cortex: task canceled")
 	return finish(ctx, queue, reqCtx, a2a.TaskStateCanceled, "")
+}
+
+func taskLogger(h *Host, reqCtx *a2asrv.RequestContext) *slog.Logger {
+	return slog.Default().With(
+		"agent", h.cfg.Agent.Name,
+		"context_id", reqCtx.ContextID,
+		"task_id", string(reqCtx.TaskID),
+	)
+}
+
+func logTaskEnd(ctx context.Context, log *slog.Logger, state a2a.TaskState, why string, took time.Duration) {
+	ms := took.Milliseconds()
+	if state == a2a.TaskStateFailed {
+		log.ErrorContext(ctx, "cortex: task failed", "duration_ms", ms, "error", why)
+		return
+	}
+	log.InfoContext(ctx, "cortex: task "+string(state), "duration_ms", ms)
 }
 
 // finish closes the task; a2a-go ends a stream on a final event only.

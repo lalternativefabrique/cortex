@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,11 @@ type Config struct {
 	// Optional; nil means an extraction is used in-run and then discarded.
 	MemoryRecorder MemoryRecorder
 	Callback       Callback
+	// Logger receives what the run does: model calls, tool calls, compaction
+	// and how the turn ended. It never receives message, argument or result
+	// content, which belongs to the person the agent acts for. Nil means
+	// slog.Default(); a host scopes it with the ids of the turn.
+	Logger *slog.Logger
 }
 
 // Recorder persists conversation messages as a run proceeds, so an
@@ -147,6 +153,9 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if cfg.Callback == nil {
 		cfg.Callback = NopCallback{}
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
 	tools := make(map[string]Tool, len(cfg.Tools))
 	for _, t := range cfg.Tools {
 		if _, dup := tools[t.Name()]; dup {
@@ -163,6 +172,30 @@ func NewRunner(cfg Config) (*Runner, error) {
 // Messages carries the conversation so far and is not mutated; the returned
 // Result reports what the run produced.
 func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
+	started := time.Now()
+	r.cfg.Logger.InfoContext(ctx, "agent: turn started", "history_messages", len(messages), "tools", len(r.tools))
+	res, err := r.run(ctx, messages)
+	attrs := []any{
+		"steps", res.Steps,
+		"tool_calls", len(res.ToolCalls),
+		"compactions", res.Compactions,
+		"tokens_in", res.Usage.Input,
+		"tokens_out", res.Usage.Output,
+		"tokens_cached", res.Usage.CachedInput,
+		"duration_ms", time.Since(started).Milliseconds(),
+	}
+	switch {
+	case err != nil:
+		r.cfg.Logger.ErrorContext(ctx, "agent: turn failed", append(attrs, "error", err)...)
+	case res.Truncated:
+		r.cfg.Logger.WarnContext(ctx, "agent: turn truncated", append(attrs, "max_steps", r.cfg.MaxSteps)...)
+	default:
+		r.cfg.Logger.InfoContext(ctx, "agent: turn ended", attrs...)
+	}
+	return res, err
+}
+
+func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	history := make([]Message, len(messages))
 	copy(history, messages)
 
@@ -171,7 +204,7 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 		result.Steps = step
 		r.cfg.Callback.OnStepStart(step)
 
-		history = r.evict(history)
+		history = r.evict(ctx, history, step)
 
 		compacted, did, compactUsage, err := r.maybeCompact(ctx, history, step)
 		// Counted whether or not the compaction succeeded: a summarisation that
@@ -181,12 +214,14 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 			// A failed compaction is not fatal on its own: the next model
 			// call may still fit. Report it and carry on with the history
 			// as it stands.
+			r.cfg.Logger.WarnContext(ctx, "agent: compaction failed", "step", step, "error", err)
 			r.cfg.Callback.OnError(fmt.Errorf("compaction: %w", err))
 		} else if did {
 			history = compacted
 			result.Compactions++
 		}
 
+		called := time.Now()
 		resp, err := r.complete(ctx, CompletionRequest{
 			System:   r.cfg.System,
 			Messages: history,
@@ -197,6 +232,15 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 			return result, fmt.Errorf("step %d: %w", step, err)
 		}
 		result.Usage.Add(resp.Usage)
+		r.cfg.Logger.InfoContext(ctx, "agent: model answered",
+			"step", step,
+			"tool_calls", len(resp.ToolCalls),
+			"answer_bytes", len(resp.Text),
+			"tokens_in", resp.Usage.Input,
+			"tokens_out", resp.Usage.Output,
+			"tokens_cached", resp.Usage.CachedInput,
+			"duration_ms", time.Since(called).Milliseconds(),
+		)
 		// Kept from the last step only: what it worked through on the way to
 		// the answer it gave, not every step's thinking piled up.
 		result.Reasoning = resp.Reasoning
@@ -216,6 +260,7 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 			// not parse it. Ending here would abandon a run mid-thought.
 			if LeakedToolCall(resp.Text) && result.Recoveries < maxLeakRecoveries {
 				result.Recoveries++
+				r.cfg.Logger.WarnContext(ctx, "agent: tool call written as text", "step", step, "marker", firstLeakedMarker(resp.Text), "recovery", result.Recoveries)
 				r.cfg.Callback.OnError(fmt.Errorf("model wrote a tool call as text (%s); asking it to retry", firstLeakedMarker(resp.Text)))
 				notice := Message{Role: RoleUser, Content: leakedCallNotice}
 				history = append(history, notice)
@@ -278,6 +323,9 @@ func (r *Runner) executeOne(ctx context.Context, call ToolCall) toolOutcome {
 		trace.Result = content
 		if err != nil {
 			trace.Err = err.Error()
+			r.cfg.Logger.WarnContext(ctx, "agent: tool failed", "tool", call.Name, "duration_ms", trace.DurationMs, "error", err)
+		} else {
+			r.cfg.Logger.InfoContext(ctx, "agent: tool called", "tool", call.Name, "duration_ms", trace.DurationMs, "result_bytes", len(content))
 		}
 		r.cfg.Callback.OnToolEnd(trace)
 		return toolOutcome{content: content, trace: trace}
@@ -285,6 +333,7 @@ func (r *Runner) executeOne(ctx context.Context, call ToolCall) toolOutcome {
 
 	tool, ok := r.tools[call.Name]
 	if !ok {
+		r.cfg.Logger.WarnContext(ctx, "agent: unknown tool requested", "tool", call.Name)
 		return finish(fmt.Sprintf("error: unknown tool %q", call.Name), nil)
 	}
 
@@ -311,12 +360,13 @@ func (r *Runner) executeOne(ctx context.Context, call ToolCall) toolOutcome {
 // compaction because it is nearly free and preserves the exact wording of
 // what remains, where a summary does not — and because dropping stale bytes
 // may keep the history under the compaction threshold entirely.
-func (r *Runner) evict(history []Message) []Message {
+func (r *Runner) evict(ctx context.Context, history []Message, step int) []Message {
 	if r.cfg.ContextWindow <= 0 {
 		return history
 	}
 	out, freed := EvictStale(history, r.cfg.EvictKeepRecent)
 	if freed > 0 {
+		r.cfg.Logger.InfoContext(ctx, "agent: stale tool results evicted", "step", step, "freed_tokens", freed)
 		r.cfg.Callback.OnEvict(freed)
 	}
 	return out
@@ -391,10 +441,13 @@ func (r *Runner) maybeCompact(ctx context.Context, history []Message, step int) 
 	}
 	if mem != nil && !mem.IsEmpty() && r.cfg.MemoryRecorder != nil {
 		if err := r.cfg.MemoryRecorder.Append(*mem); err != nil {
+			r.cfg.Logger.WarnContext(ctx, "agent: memory not recorded", "step", step, "error", err)
 			r.cfg.Callback.OnError(fmt.Errorf("record memory: %w", err))
 		}
 	}
-	r.cfg.Callback.OnCompactEnd(used, EstimateMessages(r.cfg.System, compacted)+r.toolTokens)
+	after := EstimateMessages(r.cfg.System, compacted) + r.toolTokens
+	r.cfg.Logger.InfoContext(ctx, "agent: history compacted", "step", step, "tokens_before", used, "tokens_after", after, "threshold_tokens", threshold)
+	r.cfg.Callback.OnCompactEnd(used, after)
 	return compacted, true, usage, nil
 }
 

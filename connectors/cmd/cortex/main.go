@@ -25,6 +25,7 @@ import (
 var version = "dev"
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
 		slog.Error("cortex", "error", err)
 		os.Exit(1)
