@@ -3,7 +3,7 @@ module github.com/lalternative/packages/go/cortex/connectors
 go 1.26.6
 
 require (
-	github.com/lalternative/packages/go/cortex v0.14.0
+	github.com/lalternative/packages/go/cortex v0.15.0
 	github.com/lalternative/packages/go/search v0.3.0
 	github.com/lalternative/packages/tornad/sdk-go v0.1.0
 	golang.org/x/image v0.46.0
