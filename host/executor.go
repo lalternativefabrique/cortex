@@ -29,6 +29,7 @@ var _ a2asrv.AgentExecutor = (*executor)(nil)
 
 func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
 	subject, headers, turnContext := metadata(reqCtx.Message)
+	ctx = withTurnToken(ctx, reqCtx.Message)
 	log := taskLogger(e.host, reqCtx).With("subject", subject)
 	started := time.Now()
 	log.InfoContext(ctx, "cortex: task started", "resumed", reqCtx.StoredTask != nil)

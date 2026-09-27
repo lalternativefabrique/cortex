@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/lalternative/packages/go/cortex v0.15.0
 	github.com/lalternative/packages/go/search v0.3.0
+	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/tornad/sdk-go v0.1.0
 	golang.org/x/image v0.46.0
 )
@@ -28,7 +29,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/lalternative/packages/go/authz v0.1.0 // indirect
-	github.com/lalternative/packages/go/svcauth v0.4.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect

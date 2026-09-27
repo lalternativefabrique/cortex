@@ -20,6 +20,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/host"
 	"github.com/lalternative/packages/go/cortex/mcp"
 	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternative/packages/go/svcauth"
 )
 
 var version = "dev"
@@ -86,9 +87,15 @@ func configFromEnv() (host.Config, string, error) {
 		ContextWindow: envInt("CORTEX_CONTEXT_WINDOW"),
 		Version:       version,
 	}
-	if cfg.Token == "" {
-		return cfg, "", fmt.Errorf("CORTEX_TOKEN is required: every caller of /a2a presents it")
+	verify, err := callersFromEnv()
+	if err != nil {
+		return cfg, "", err
 	}
+	cfg.Verify = verify
+	if cfg.Token == "" && cfg.Verify == nil {
+		return cfg, "", fmt.Errorf("CORTEX_TOKEN or CORTEX_ISSUER_URL is required: every caller of /a2a proves who it is")
+	}
+	cfg.Provider.HTTPClient = &http.Client{Transport: lentToken{}}
 	if path := os.Getenv("CORTEX_MCP_CONFIG"); path != "" {
 		m, err := mcp.ReadConfigFile(path)
 		if err != nil {
@@ -125,13 +132,79 @@ func mcpServersFromEnv(raw string) ([]mcp.ServerConfig, error) {
 
 // recallFromEnv keeps the agent's memory in lalter when CORTEX_RECALL_URL
 // names lalter's API; the key defaults to the model key, one app key with
-// both the llm and recall scopes.
+// both the llm and recall scopes. A turn its caller lent a token to calls
+// under that token instead.
 func recallFromEnv() recall.Store {
 	base := strings.TrimSpace(os.Getenv("CORTEX_RECALL_URL"))
 	if base == "" {
 		return nil
 	}
-	return lalterrecall.New(lalterrecall.Config{BaseURL: base, AppKey: envOr("CORTEX_RECALL_KEY", os.Getenv("CORTEX_API_KEY"))})
+	return lalterrecall.New(lalterrecall.Config{
+		BaseURL: base,
+		AppKey:  envOr("CORTEX_RECALL_KEY", os.Getenv("CORTEX_API_KEY")),
+		Client:  &http.Client{Timeout: 15 * time.Second, Transport: lentToken{}},
+	})
+}
+
+// lentToken presents the token the turn's caller lent, when it lent one, in
+// place of the configured key.
+type lentToken struct{}
+
+func (lentToken) RoundTrip(req *http.Request) (*http.Response, error) {
+	if token := host.TurnToken(req.Context()); token != "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// callersFromEnv accepts, as callers of /a2a, the tokens CORTEX_ISSUER_URL
+// signed for CORTEX_AUDIENCE, checked offline against its keys at
+// CORTEX_JWKS_URL (by default the issuer's /.well-known/jwks.json). When
+// CORTEX_CALLERS is set, the token must also name one of its clients.
+func callersFromEnv() (func(context.Context, string) error, error) {
+	issuer := strings.TrimRight(strings.TrimSpace(os.Getenv("CORTEX_ISSUER_URL")), "/")
+	if issuer == "" {
+		return nil, nil
+	}
+	audience := strings.TrimSpace(os.Getenv("CORTEX_AUDIENCE"))
+	if audience == "" {
+		return nil, fmt.Errorf("CORTEX_ISSUER_URL needs CORTEX_AUDIENCE")
+	}
+	verifier, err := svcauth.New([]svcauth.Issuer{{
+		URL:       issuer,
+		JWKSURL:   envOr("CORTEX_JWKS_URL", issuer+"/.well-known/jwks.json"),
+		Audiences: []string{audience},
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("CORTEX_ISSUER_URL: %w", err)
+	}
+	callers := splitList(os.Getenv("CORTEX_CALLERS"))
+	return func(ctx context.Context, bearer string) error {
+		claims, err := verifier.Verify(ctx, bearer)
+		if err != nil {
+			return err
+		}
+		if len(callers) == 0 {
+			return nil
+		}
+		for _, c := range callers {
+			if claims.ClientID == c {
+				return nil
+			}
+		}
+		return fmt.Errorf("client %q may not call this agent", claims.ClientID)
+	}, nil
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, v := range strings.Split(raw, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

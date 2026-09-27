@@ -72,8 +72,8 @@ github.com/lalternative/packages/go/cortex v0.15.0 h1:7PyutLu6ITfsBwWpHLrRccYU6n
 github.com/lalternative/packages/go/cortex v0.15.0/go.mod h1:IE72WUXzN6S1b3Z8kP9gKgoTpee1hTibFGEh6gsHRQM=
 github.com/lalternative/packages/go/search v0.3.0 h1:0W9+pWd+OEaSZLHHNpT8tjBclSRLy69/4Z/cMMho5K8=
 github.com/lalternative/packages/go/search v0.3.0/go.mod h1:G7ohkjwpS/n9HCByGUqihnzPL+2hAQ1wsAGK7EEcDUw=
-github.com/lalternative/packages/go/svcauth v0.4.0 h1:5G9RjC4zRb0VEYo2zvpNU7hc7BF3M54IrFDN7Fba6FE=
-github.com/lalternative/packages/go/svcauth v0.4.0/go.mod h1:I3AFiK7snrcH8KgUOEI3l/1RZ3leJtM6BF3mP11wqsY=
+github.com/lalternative/packages/go/svcauth v0.6.0 h1:5jWnmzTt/tHsBCKTr9qG29GOGDlFUhkUPHnHYTlNPZk=
+github.com/lalternative/packages/go/svcauth v0.6.0/go.mod h1:I3AFiK7snrcH8KgUOEI3l/1RZ3leJtM6BF3mP11wqsY=
 github.com/lalternative/packages/tornad/sdk-go v0.1.0 h1:0h637HwNmzUyqfk78lqoIgDkp2Dpi3LqOWVVNiwMO7k=
 github.com/lalternative/packages/tornad/sdk-go v0.1.0/go.mod h1:K3BjVthlRJjVn5zxoGsogJPFjpwjFxypPdVI+G51dxY=
 github.com/lestrrat-go/blackmagic v1.0.4 h1:IwQibdnf8l2KoO+qC3uT4OaTWsW7tuRQXy9TRN9QanA=

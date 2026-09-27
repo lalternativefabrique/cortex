@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -369,4 +370,26 @@ func mustParse(t *testing.T, raw string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+func TestVerifyDecidesTheCallerInPlaceOfTheToken(t *testing.T) {
+	provider, _ := fakeModel(t, "")
+	var seen string
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "static", Verify: func(_ context.Context, bearer string) error {
+		seen = bearer
+		if bearer != "signed-by-the-issuer" {
+			return errors.New("not ours")
+		}
+		return nil
+	}})
+	for bearer, want := range map[string]int{"signed-by-the-issuer": http.StatusOK, "static": http.StatusUnauthorized, "forged": http.StatusUnauthorized} {
+		res := rpc(t, srv.URL, bearer, "message/send", message("bonjour", "ctx-v", nil))
+		res.Body.Close()
+		if res.StatusCode != want {
+			t.Errorf("bearer %q: status %d, want %d", bearer, res.StatusCode, want)
+		}
+	}
+	if seen == "" {
+		t.Fatal("Verify was never asked")
+	}
 }

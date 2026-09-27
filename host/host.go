@@ -32,6 +32,10 @@ const (
 	// only: what the caller knows of the moment (the scope the person chose,
 	// their time zone). It is not remembered.
 	TurnContextKey = "turnContext"
+	// TurnTokenKey carries the Bearer the turn's model and memory calls
+	// present in place of the configured key: the caller lends the agent the
+	// identity it acts under, for this turn only. See TurnToken.
+	TurnTokenKey = "turnToken"
 )
 
 // Agent is what the container declares itself to be.
@@ -48,8 +52,11 @@ type Config struct {
 	// Recall nil keeps no memory; recall_memory is offered only with it.
 	Recall recall.Store
 	// Token is what every caller of /a2a presents as Bearer. Empty refuses
-	// everyone.
+	// everyone, unless Verify is set.
 	Token string
+	// Verify, when set, decides a caller of /a2a from the Bearer it presents,
+	// in place of Token: an identity provider's token, for instance.
+	Verify func(ctx context.Context, bearer string) error
 	// PublicURL is where callers reach this container, for its Agent Card.
 	PublicURL     string
 	MaxSteps      int
@@ -99,13 +106,20 @@ func (h *Host) Handler() http.Handler {
 func (h *Host) authorized(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if h.cfg.Token == "" || !ok || subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.Token)) != 1 {
+		if !ok || !h.accepts(r.Context(), got) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="cortex"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (h *Host) accepts(ctx context.Context, bearer string) bool {
+	if h.cfg.Verify != nil {
+		return h.cfg.Verify(ctx, bearer) == nil
+	}
+	return h.cfg.Token != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(h.cfg.Token)) == 1
 }
 
 // Card describes the agent: what it is, where to reach it, and the tools it
