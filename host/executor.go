@@ -53,7 +53,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	log.InfoContext(ctx, "cortex: task working")
 
 	h := e.host
-	tools := h.servers.forTurn()
+	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.forTurn()...)
 	var memory *recall.Recorder
 	if h.cfg.Recall != nil && subject != "" {
 		scope := recall.Scope{Subject: subject, Agent: h.cfg.Agent.Name}

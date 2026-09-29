@@ -49,6 +49,9 @@ type Config struct {
 	Agent    Agent
 	Provider agent.Provider
 	MCP      mcp.Config
+	// Tools are offered on every turn beside the MCP servers' tools: what
+	// the host itself can do, such as reading the web.
+	Tools []agent.Tool
 	// Recall nil keeps no memory; recall_memory is offered only with it.
 	Recall recall.Store
 	// Token is what every caller of /a2a presents as Bearer. Empty refuses
@@ -123,9 +126,9 @@ func (h *Host) accepts(ctx context.Context, bearer string) bool {
 }
 
 // Card describes the agent: what it is, where to reach it, and the tools it
-// can call, those its reachable MCP servers offer.
+// can call, its own and those its reachable MCP servers offer.
 func (h *Host) Card() a2a.AgentCard {
-	tools := h.servers.offered()
+	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.offered()...)
 	skills := make([]a2a.AgentSkill, 0, len(tools)+1)
 	for _, t := range tools {
 		skills = append(skills, a2a.AgentSkill{ID: t.Name(), Name: t.Name(), Description: firstLine(t.Description()), Tags: []string{"tool"}})
