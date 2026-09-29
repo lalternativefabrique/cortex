@@ -101,3 +101,27 @@ func TestAnAgentNeedsATokenOrAnIssuer(t *testing.T) {
 		t.Fatalf("got verify=%v, %v", cfg.Verify != nil, err)
 	}
 }
+
+func TestTheAgentReadsTheWebThroughTornadWhenItIsNamed(t *testing.T) {
+	t.Setenv("CORTEX_TORNAD_URL", "http://tornad.internal/")
+	t.Setenv("CORTEX_TORNAD_KEY", "k")
+	got, err := webToolsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range got {
+		names = append(names, tool.Name())
+	}
+	if !reflect.DeepEqual(names, []string{"web_search", "fetch_url"}) {
+		t.Errorf("tools = %v", names)
+	}
+}
+
+func TestWithoutTornadTheAgentHasNoWebOfItsOwn(t *testing.T) {
+	t.Setenv("CORTEX_TORNAD_URL", "")
+	got, err := webToolsFromEnv()
+	if err != nil || got != nil {
+		t.Errorf("got %v, %v", got, err)
+	}
+}

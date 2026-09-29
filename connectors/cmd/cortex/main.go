@@ -97,6 +97,11 @@ func configFromEnv() (host.Config, string, error) {
 		ContextWindow: envInt("CORTEX_CONTEXT_WINDOW"),
 		Version:       version,
 	}
+	web, err := webToolsFromEnv()
+	if err != nil {
+		return cfg, "", err
+	}
+	cfg.Tools = web
 	verify, err := callersFromEnv()
 	if err != nil {
 		return cfg, "", err
