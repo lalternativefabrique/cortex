@@ -26,7 +26,7 @@ import (
 var version = "dev"
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(turnHandler{slog.NewJSONHandler(os.Stdout, nil)}))
 	if err := run(); err != nil {
 		slog.Error("cortex", "error", err)
 		os.Exit(1)
@@ -40,6 +40,16 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTelemetry, err := telemetry(ctx, cfg.Agent.Name)
+	if err != nil {
+		slog.Warn("cortex: skalpai unreachable, logging to stdout only", "error", err)
+	}
+	defer func() {
+		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTelemetry(flush)
+	}()
 
 	h, err := host.New(ctx, cfg)
 	if err != nil {
