@@ -61,7 +61,12 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		tools = append(tools, recall.NewTool(h.cfg.Recall, scope))
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, reqCtx.ContextID)
 	}
-	client, err := agent.NewClient(h.cfg.Provider)
+	provider := h.cfg.Provider
+	if model, _ := reqCtx.Message.Metadata[ModelKey].(string); strings.TrimSpace(model) != "" {
+		provider.Model = strings.TrimSpace(model)
+		log = log.With("model", provider.Model)
+	}
+	client, err := agent.NewClient(provider)
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}

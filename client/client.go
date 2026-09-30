@@ -44,6 +44,8 @@ type Request struct {
 	// Skill names the declared skill the message runs; Text is then its
 	// input.
 	Skill string
+	// Model asks for a model for this run in place of the agent's own.
+	Model string
 }
 
 // ToolCall is one tool the agent called during the turn.
@@ -196,6 +198,9 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 	}
 	if r.Skill != "" {
 		meta[host.SkillKey] = r.Skill
+	}
+	if r.Model != "" {
+		meta[host.ModelKey] = r.Model
 	}
 	conversation := r.ConversationID
 	if conversation == "" {

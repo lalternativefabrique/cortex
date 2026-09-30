@@ -254,3 +254,23 @@ func TestSkillsSetAfterStartAreListedAndRun(t *testing.T) {
 		t.Error("an invalid catalog replaced the skills")
 	}
 }
+
+func TestARunAsksForItsOwnModel(t *testing.T) {
+	provider, bodies := model(t, "respond", `{"category":"devtools","energy":25}`, "")
+	a, _ := serve(t, provider)
+	if _, _, err := suggestStyle.Run(context.Background(), a, styleInput{Brand: "Synthiz"}, Call{Model: "qwen3-235b-a22b-instruct-2507"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*bodies)[0], `"model":"qwen3-235b-a22b-instruct-2507"`) {
+		t.Errorf("the run's model was not asked for: %s", (*bodies)[0])
+	}
+
+	own, ownBodies := model(t, "respond", `{"category":"devtools","energy":25}`, "")
+	b, _ := serve(t, own)
+	if _, _, err := suggestStyle.Run(context.Background(), b, styleInput{Brand: "Synthiz"}, Call{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*ownBodies)[0], `"model":"m"`) {
+		t.Errorf("without a model the agent's own is asked for: %s", (*ownBodies)[0])
+	}
+}

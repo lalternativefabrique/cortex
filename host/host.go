@@ -46,6 +46,9 @@ const (
 	// its instructions and output schema, and checks the message text, the
 	// skill's input as JSON, against its input schema.
 	SkillKey = "skill"
+	// ModelKey asks for a model for this run in place of the agent's own;
+	// the endpoint the agent calls decides whether it serves it.
+	ModelKey = "model"
 )
 
 // Agent is what the container declares itself to be.
@@ -201,6 +204,7 @@ func cortexExtension() a2a.AgentExtension {
 		Params: map[string]any{
 			"metadata": map[string]string{
 				SkillKey:        "the declared skill the message runs; the message text is then its input, as JSON",
+				ModelKey:        "a model for this run in place of the agent's own; the model endpoint decides whether it serves it",
 				OutputSchemaKey: "a JSON Schema the answer must match; the answer then comes as one data part of the answer artifact",
 				SubjectKey:      "the person the run acts for, its memory scope",
 				TurnContextKey:  "text added to the agent's instructions for this run only",

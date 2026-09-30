@@ -78,6 +78,8 @@ type Call struct {
 	MCPHeaders     map[string]string
 	// Context is added to the skill's instructions for this run only.
 	Context string
+	// Model asks for a model for this run in place of the agent's own.
+	Model string
 }
 
 // Run sends in to the agent as this skill and returns its answer as an Out,
@@ -96,6 +98,7 @@ func (t Skill[In, Out]) Run(ctx context.Context, a client.Agent, in In, c Call) 
 		ConversationID: c.ConversationID,
 		MCPHeaders:     c.MCPHeaders,
 		Skill:          t.declaration.ID,
+		Model:          c.Model,
 	}
 	if isText[Out]() {
 		text, turn, err := client.Say(ctx, a, req)
