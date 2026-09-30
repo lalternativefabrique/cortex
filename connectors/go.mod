@@ -3,7 +3,7 @@ module github.com/lalternative/packages/go/cortex/connectors
 go 1.26.6
 
 require (
-	github.com/lalternative/packages/go/cortex v0.17.0
+	github.com/lalternative/packages/go/cortex v0.18.0
 	github.com/lalternative/packages/go/search v0.3.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
@@ -45,6 +45,7 @@ require (
 	github.com/open-policy-agent/opa v1.20.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
