@@ -36,6 +36,11 @@ const (
 	// present in place of the configured key: the caller lends the agent the
 	// identity it acts under, for this turn only. See TurnToken.
 	TurnTokenKey = "turnToken"
+	// OutputSchemaKey carries a JSON Schema the turn's answer must match.
+	// The turn then ends with the model calling respond, the answer is
+	// checked against the schema, and it is returned as one data part of the
+	// "answer" artifact instead of text.
+	OutputSchemaKey = "outputSchema"
 )
 
 // Agent is what the container declares itself to be.

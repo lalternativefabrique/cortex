@@ -64,11 +64,23 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}
-	stream := &stream{ctx: ctx, queue: queue, task: reqCtx, memory: memory, answer: a2a.NewArtifactID()}
+	system := instructions(h.cfg.Agent.Instructions, turnContext)
+	runCtx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	var respond *respondTool
+	if schema, ok := outputSchema(reqCtx.Message.Metadata); ok {
+		respond, err = newRespondTool(schema, stopRun)
+		if err != nil {
+			return end(a2a.TaskStateFailed, err.Error())
+		}
+		tools = append(tools, respond)
+		system = withRespondInstruction(system)
+	}
+	stream := &stream{ctx: ctx, queue: queue, task: reqCtx, memory: memory, answer: a2a.NewArtifactID(), structured: respond != nil}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
 		Tools:         tools,
-		System:        instructions(h.cfg.Agent.Instructions, turnContext),
+		System:        system,
 		MaxSteps:      h.cfg.MaxSteps,
 		ContextWindow: h.cfg.ContextWindow,
 		Stream:        true,
@@ -84,7 +96,11 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	history := append(h.conversations.history(conversation), asking)
 	memory.Said(reqCtx.Message.ID, "user", asked)
 
-	res, err := runner.Run(mcp.WithHeaders(ctx, headers), history)
+	runWith := mcp.WithHeaders(runCtx, headers)
+	res, err := runner.Run(runWith, history)
+	if respond != nil {
+		return e.endStructured(ctx, end, stream, respond, runner, runWith, conversation, asking, history, res, err)
+	}
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}
@@ -95,6 +111,34 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		return err
 	}
 	return end(a2a.TaskStateCompleted, "")
+}
+
+// endStructured finishes a turn that asked for an output schema: the answer
+// is what respond recorded. A turn that ended in text instead is reminded
+// to call respond, a bounded number of times.
+func (e *executor) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, stream *stream, respond *respondTool,
+	runner *agent.Runner, runCtx context.Context, conversation string, asking agent.Message, history []agent.Message, res agent.Result, err error,
+) error {
+	for reminders := 0; ; reminders++ {
+		if answer, ok := respond.recorded(); ok {
+			e.host.conversations.append(conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: string(answer)})
+			stream.memory.Said(uuid.NewString(), "assistant", string(answer))
+			if err := stream.data(answer); err != nil {
+				return err
+			}
+			return end(a2a.TaskStateCompleted, "")
+		}
+		if err != nil {
+			return end(a2a.TaskStateFailed, err.Error())
+		}
+		if reminders == maxRespondReminders {
+			return end(a2a.TaskStateFailed, "the agent did not answer in the required format")
+		}
+		history = append(history,
+			agent.Message{Role: agent.RoleAssistant, Content: res.Text},
+			agent.Message{Role: agent.RoleUser, Content: respondReminder})
+		res, err = runner.Run(runCtx, history)
+	}
 }
 
 func (e *executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
@@ -174,6 +218,8 @@ type stream struct {
 	task   *a2asrv.RequestContext
 	memory *recall.Recorder
 	answer a2a.ArtifactID
+	// structured holds text back: the answer is what respond records.
+	structured bool
 
 	mu      sync.Mutex
 	started bool
@@ -183,7 +229,7 @@ type stream struct {
 }
 
 func (s *stream) OnTextDelta(text string) {
-	if text == "" {
+	if text == "" || s.structured {
 		return
 	}
 	s.mu.Lock()
@@ -216,7 +262,28 @@ func (s *stream) close(text string) error {
 	return s.queue.Write(s.ctx, s.chunk(text, true))
 }
 
+// data sends a structured answer as the answer artifact's one data part.
+func (s *stream) data(answer json.RawMessage) error {
+	var decoded any
+	if err := json.Unmarshal(answer, &decoded); err != nil {
+		return err
+	}
+	part := a2a.DataPart{Data: map[string]any{"value": decoded}}
+	if object, ok := decoded.(map[string]any); ok {
+		part = a2a.DataPart{Data: object}
+	}
+	ev := a2a.NewArtifactEvent(s.task, part)
+	ev.Artifact.Name = "answer"
+	ev.LastChunk = true
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queue.Write(s.ctx, ev)
+}
+
 func (s *stream) OnToolEnd(trace agent.ToolCallTrace) {
+	if s.structured && trace.Name == respondName {
+		return
+	}
 	s.memory.OnToolEnd(trace)
 	var args any = trace.Arguments
 	var decoded any
