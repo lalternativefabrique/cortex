@@ -68,17 +68,17 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	system := instructions(h.cfg.Agent.Instructions, turnContext)
 	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
 	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
-		task, ok := h.tasks[strings.TrimSpace(name)]
+		declared, ok := h.skills[strings.TrimSpace(name)]
 		if !ok {
-			return end(a2a.TaskStateFailed, fmt.Sprintf("this agent declares no task %q", name))
+			return end(a2a.TaskStateFailed, fmt.Sprintf("this agent declares no skill %q", name))
 		}
-		if err := task.checkInput(asked); err != nil {
+		if err := declared.checkInput(asked); err != nil {
 			return end(a2a.TaskStateFailed, err.Error())
 		}
-		log = log.With("skill", task.ID)
-		system = instructions(instructions(h.cfg.Agent.Instructions, task.Instructions), turnContext)
-		if declared, ok := task.outputSchema(); ok {
-			schema, hasSchema = declared, true
+		log = log.With("skill", declared.ID)
+		system = instructions(instructions(h.cfg.Agent.Instructions, declared.Instructions), turnContext)
+		if schema2, ok := declared.outputSchema(); ok {
+			schema, hasSchema = schema2, true
 		}
 	}
 	runCtx, stopRun := context.WithCancel(ctx)

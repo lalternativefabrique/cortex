@@ -1,4 +1,4 @@
-package task
+package skill
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func serve(t *testing.T, provider agent.Provider) (client.Agent, string) {
 		Agent:    host.Agent{Name: "partage", Instructions: "You are partage's writer."},
 		Provider: provider,
 		Token:    "tok",
-		Tasks:    Catalog(suggestStyle, summarize).Tasks,
+		Skills:   Catalog(suggestStyle, summarize).Skills,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,11 +95,11 @@ func TestADeclarationCarriesItsSchemasAndExamples(t *testing.T) {
 		t.Errorf("examples = %s", d.Examples)
 	}
 	if len(summarize.Declaration().Output) != 0 {
-		t.Error("a text task has no output schema")
+		t.Error("a text skill has no output schema")
 	}
 }
 
-func TestRunSendsTheInputAsTheNamedTaskAndReturnsItsType(t *testing.T) {
+func TestRunSendsTheInputAsTheNamedSkillAndReturnsItsType(t *testing.T) {
 	provider, bodies := model(t, "respond", `{"category":"devtools","energy":75}`, "")
 	a, _ := serve(t, provider)
 
@@ -121,7 +121,7 @@ func TestRunSendsTheInputAsTheNamedTaskAndReturnsItsType(t *testing.T) {
 	}
 }
 
-func TestATextTaskAnswersInText(t *testing.T) {
+func TestATextSkillAnswersInText(t *testing.T) {
 	provider, _ := model(t, "", "", "Une marque de veille.")
 	a, _ := serve(t, provider)
 	got, _, err := summarize.Run(context.Background(), a, styleInput{Brand: "Synthiz"}, Call{})
@@ -142,16 +142,16 @@ func TestAnInputOutsideItsSchemaIsRefusedBeforeAnyModelCall(t *testing.T) {
 	}
 }
 
-func TestAnUndeclaredTaskIsRefused(t *testing.T) {
+func TestAnUndeclaredSkillIsRefused(t *testing.T) {
 	provider, _ := model(t, "", "", "x")
 	a, _ := serve(t, provider)
 	_, _, err := client.Say(context.Background(), a, client.Request{Text: "{}", Skill: "launch_rocket"})
-	if err == nil || !strings.Contains(err.Error(), `declares no task "launch_rocket"`) {
+	if err == nil || !strings.Contains(err.Error(), `declares no skill "launch_rocket"`) {
 		t.Errorf("err = %v", err)
 	}
 }
 
-func TestTheCardAndTasksListTheDeclaredTasks(t *testing.T) {
+func TestTheCardAndSkillsListTheDeclaredSkills(t *testing.T) {
 	provider, _ := model(t, "", "", "x")
 	_, url := serve(t, provider)
 
@@ -169,42 +169,59 @@ func TestTheCardAndTasksListTheDeclaredTasks(t *testing.T) {
 		} `json:"skills"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&card)
-	if len(card.Skills) < 2 || card.Skills[0].ID != "suggest_style" || card.Skills[0].Tags[0] != "task" ||
+	if len(card.Skills) < 2 || card.Skills[0].ID != "suggest_style" || card.Skills[0].Tags[0] != "skill" ||
 		card.Skills[0].Examples[0] != `{"brand":"Synthiz"}` || card.Skills[0].OutputModes[0] != "application/json" {
 		t.Errorf("skills = %+v", card.Skills)
 	}
 
-	res2, err := http.Get(url + "/tasks")
+	res3, err := http.Get(url + "/.well-known/agent.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res3.Body.Close()
+	var ext struct {
+		Capabilities struct {
+			Extensions []struct {
+				URI string `json:"uri"`
+			} `json:"extensions"`
+		} `json:"capabilities"`
+	}
+	_ = json.NewDecoder(res3.Body).Decode(&ext)
+	if len(ext.Capabilities.Extensions) != 1 || ext.Capabilities.Extensions[0].URI != host.ExtensionURI {
+		t.Errorf("the card must declare cortex's A2A extension: %+v", ext.Capabilities)
+	}
+
+	res2, err := http.Get(url + "/skills")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer res2.Body.Close()
 	var catalog host.Catalog
 	_ = json.NewDecoder(res2.Body).Decode(&catalog)
-	if len(catalog.Tasks) != 2 || catalog.Tasks[0].Instructions != "You suggest a brand voice." || len(catalog.Tasks[0].Output) == 0 {
+	if len(catalog.Skills) != 2 || catalog.Skills[0].Instructions != "You suggest a brand voice." || len(catalog.Skills[0].Output) == 0 {
 		t.Errorf("catalog = %+v", catalog)
 	}
 }
 
 func TestWriteFileWritesTheCatalog(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tasks.json")
+	path := filepath.Join(t.TempDir(), "skills.json")
 	if err := WriteFile(path, suggestStyle, summarize); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(path)
 	var c host.Catalog
-	if err := json.Unmarshal(raw, &c); err != nil || len(c.Tasks) != 2 || c.Tasks[1].ID != "summarize" {
+	if err := json.Unmarshal(raw, &c); err != nil || len(c.Skills) != 2 || c.Skills[1].ID != "summarize" {
 		t.Errorf("catalog %s: %v", raw, err)
 	}
 }
 
-func TestDeclaringTwiceTheSameTaskIsRefusedByTheAgent(t *testing.T) {
+func TestDeclaringTwiceTheSameSkillIsRefusedByTheAgent(t *testing.T) {
 	provider, _ := model(t, "", "", "x")
 	_, err := host.New(context.Background(), host.Config{
 		Agent: host.Agent{Name: "p"}, Provider: provider, Token: "t",
-		Tasks: Catalog(suggestStyle, suggestStyle).Tasks,
+		Skills: Catalog(suggestStyle, suggestStyle).Skills,
 	})
 	if err == nil {
-		t.Error("a task declared twice was accepted")
+		t.Error("a skill declared twice was accepted")
 	}
 }

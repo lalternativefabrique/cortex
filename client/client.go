@@ -41,7 +41,8 @@ type Request struct {
 	ConversationID string
 	// MCPHeaders ride on every MCP call of the turn, never to the model.
 	MCPHeaders map[string]string
-	// Skill names the declared task the turn runs; Text is then its input.
+	// Skill names the declared skill the message runs; Text is then its
+	// input.
 	Skill string
 }
 
