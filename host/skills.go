@@ -121,5 +121,26 @@ func (d declaredSkill) skill() a2a.AgentSkill {
 
 func (h *Host) serveSkills(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(Catalog{Skills: h.cfg.Skills})
+	list, _ := h.declaredSkills()
+	_ = json.NewEncoder(w).Encode(Catalog{Skills: list})
+}
+
+// SetSkills replaces the agent's declared skills while it serves, for an
+// agent that loads them after it started, from an app that was not up yet.
+func (h *Host) SetSkills(skills []Skill) error {
+	compiled, err := compileSkills(skills)
+	if err != nil {
+		return err
+	}
+	h.skillsMu.Lock()
+	defer h.skillsMu.Unlock()
+	h.skillList = append([]Skill(nil), skills...)
+	h.skills = compiled
+	return nil
+}
+
+func (h *Host) declaredSkills() ([]Skill, map[string]declaredSkill) {
+	h.skillsMu.RLock()
+	defer h.skillsMu.RUnlock()
+	return h.skillList, h.skills
 }

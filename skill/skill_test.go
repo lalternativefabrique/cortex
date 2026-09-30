@@ -225,3 +225,32 @@ func TestDeclaringTwiceTheSameSkillIsRefusedByTheAgent(t *testing.T) {
 		t.Error("a skill declared twice was accepted")
 	}
 }
+
+func TestSkillsSetAfterStartAreListedAndRun(t *testing.T) {
+	provider, _ := model(t, "respond", `{"category":"devtools","energy":50}`, "")
+	h, err := host.New(context.Background(), host.Config{Agent: host.Agent{Name: "partage"}, Provider: provider, Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+	a := client.Agent{URL: srv.URL, Token: "tok"}
+
+	if _, _, err := suggestStyle.Run(context.Background(), a, styleInput{Brand: "Synthiz"}, Call{}); err == nil {
+		t.Fatal("a skill ran before it was declared")
+	}
+	if err := h.SetSkills(Catalog(suggestStyle).Skills); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Card().Skills) != 1 || h.Card().Skills[0].ID != "suggest_style" {
+		t.Errorf("card skills = %+v", h.Card().Skills)
+	}
+	got, _, err := suggestStyle.Run(context.Background(), a, styleInput{Brand: "Synthiz"}, Call{})
+	if err != nil || got.Energy != 50 {
+		t.Errorf("got %+v, %v", got, err)
+	}
+	if err := h.SetSkills(Catalog(suggestStyle, suggestStyle).Skills); err == nil {
+		t.Error("an invalid catalog replaced the skills")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
@@ -82,6 +83,8 @@ type Config struct {
 
 type Host struct {
 	cfg           Config
+	skillsMu      sync.RWMutex
+	skillList     []Skill
 	skills        map[string]declaredSkill
 	servers       *servers
 	conversations *conversations
@@ -99,7 +102,7 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Host{cfg: cfg, skills: skills, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
+	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
 	h.handler = a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(&executor{host: h}))
 	return h, nil
 }
@@ -147,9 +150,10 @@ func (h *Host) accepts(ctx context.Context, bearer string) bool {
 // can call, its own and those its reachable MCP servers offer.
 func (h *Host) Card() a2a.AgentCard {
 	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.offered()...)
-	skills := make([]a2a.AgentSkill, 0, len(h.cfg.Skills)+len(tools)+1)
-	for _, s := range h.cfg.Skills {
-		skills = append(skills, h.skills[s.ID].skill())
+	list, declared := h.declaredSkills()
+	skills := make([]a2a.AgentSkill, 0, len(list)+len(tools)+1)
+	for _, s := range list {
+		skills = append(skills, declared[s.ID].skill())
 	}
 	for _, t := range tools {
 		skills = append(skills, a2a.AgentSkill{ID: t.Name(), Name: t.Name(), Description: firstLine(t.Description()), Tags: []string{"tool"}})

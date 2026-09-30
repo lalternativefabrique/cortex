@@ -68,7 +68,8 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	system := instructions(h.cfg.Agent.Instructions, turnContext)
 	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
 	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
-		declared, ok := h.skills[strings.TrimSpace(name)]
+		_, skills := h.declaredSkills()
+		declared, ok := skills[strings.TrimSpace(name)]
 		if !ok {
 			return end(a2a.TaskStateFailed, fmt.Sprintf("this agent declares no skill %q", name))
 		}
