@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lalternative/packages/go/cortex/host"
 	"github.com/lalternative/packages/go/cortex/mcp"
@@ -129,16 +131,49 @@ func TestWithoutTornadTheAgentHasNoWebOfItsOwn(t *testing.T) {
 
 const catalogJSON = `{"skills":[{"id":"find_sources","name":"Sources","description":"Find sources.","instructions":"You search.","input":{"type":"object"},"output":{"type":"object"}}]}`
 
-func TestSkillsLoadFromTheAppsURL(t *testing.T) {
+func TestSkillsLoadFromTheAppOnceItAnswers(t *testing.T) {
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = w.Write([]byte(catalogJSON))
 	}))
 	defer srv.Close()
-	t.Setenv("CORTEX_SKILLS_FILE", "")
-	t.Setenv("CORTEX_SKILLS_URL", srv.URL+"/api/v1/cortex/skills.json")
-	got, err := skillsFromEnv(context.Background())
-	if err != nil || len(got) != 1 || got[0].ID != "find_sources" || got[0].Instructions != "You search." {
-		t.Fatalf("got %+v, %v", got, err)
+
+	var got []host.Skill
+	done := make(chan struct{})
+	go func() {
+		loadSkillsFromURL(context.Background(), srv.URL, func(s []host.Skill) error { got = s; return nil })
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the skills were never loaded")
+	}
+	if len(got) != 1 || got[0].ID != "find_sources" || calls.Load() != 2 {
+		t.Errorf("got %+v after %d calls", got, calls.Load())
+	}
+}
+
+func TestLoadingStopsWithTheAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		loadSkillsFromURL(ctx, srv.URL, func([]host.Skill) error { t.Error("set on a failing app"); return nil })
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("loading did not stop with the agent")
 	}
 }
 
@@ -148,31 +183,16 @@ func TestSkillsLoadFromAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CORTEX_SKILLS_FILE", path)
-	got, err := skillsFromEnv(context.Background())
+	got, err := skillsFromFile()
 	if err != nil || len(got) != 1 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
 
-func TestWithoutSkillsTheAgentDeclaresNone(t *testing.T) {
+func TestWithoutAFileTheAgentStartsWithNoSkill(t *testing.T) {
 	t.Setenv("CORTEX_SKILLS_FILE", "")
-	t.Setenv("CORTEX_SKILLS_URL", "")
-	got, err := skillsFromEnv(context.Background())
+	got, err := skillsFromFile()
 	if err != nil || got != nil {
 		t.Fatalf("got %+v, %v", got, err)
-	}
-}
-
-func TestAnAppThatNeverAnswersEndsTheWaitWithAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-	t.Setenv("CORTEX_SKILLS_FILE", "")
-	t.Setenv("CORTEX_SKILLS_URL", srv.URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := skillsFromEnv(ctx); err == nil {
-		t.Fatal("an app that never serves its skills must end the wait with an error")
 	}
 }

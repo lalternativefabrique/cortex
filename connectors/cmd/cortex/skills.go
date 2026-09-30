@@ -13,43 +13,54 @@ import (
 	"github.com/lalternative/packages/go/cortex/host"
 )
 
-// skillAttempts bounds how long a start waits for the app serving its
-// skills: an agent and its app often start together.
+// The first retries are quick, an agent and its app often start together;
+// after that an app that stays down is asked every skillRetryMax.
 const (
-	skillAttempts = 10
-	skillRetry    = 3 * time.Second
+	skillRetryMin = 3 * time.Second
+	skillRetryMax = 30 * time.Second
 )
 
-// skillsFromEnv loads the skills the app declared for this agent, from
-// CORTEX_SKILLS_FILE or the app's CORTEX_SKILLS_URL. Neither set, the agent
-// has no declared skill.
-func skillsFromEnv(ctx context.Context) ([]host.Skill, error) {
-	if path := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_FILE")); path != "" {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
-		}
-		return decodeSkills(raw)
-	}
-	url := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_URL"))
-	if url == "" {
+// skillsFromFile reads CORTEX_SKILLS_FILE, a file shipped with the agent.
+func skillsFromFile() ([]host.Skill, error) {
+	path := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_FILE"))
+	if path == "" {
 		return nil, nil
 	}
-	var last error
-	for attempt := 1; attempt <= skillAttempts; attempt++ {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
+	}
+	var c host.Catalog
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
+	}
+	return c.Skills, nil
+}
+
+// loadSkillsFromURL fetches the app's skills.json (CORTEX_SKILLS_URL) while
+// the agent already serves, retrying until the app answers, then hands them
+// to set. It returns when they are set or ctx ends.
+func loadSkillsFromURL(ctx context.Context, url string, set func([]host.Skill) error) {
+	wait := skillRetryMin
+	for attempt := 1; ; attempt++ {
 		skills, err := fetchSkills(ctx, url)
 		if err == nil {
-			return skills, nil
+			err = set(skills)
 		}
-		last = err
+		if err == nil {
+			slog.Info("cortex: skills loaded", "url", url, "skills", len(skills), "attempt", attempt)
+			return
+		}
 		slog.Warn("cortex: skills not loaded yet", "url", url, "attempt", attempt, "error", err)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(skillRetry):
+			return
+		case <-time.After(wait):
+		}
+		if wait < skillRetryMax {
+			wait = min(wait*2, skillRetryMax)
 		}
 	}
-	return nil, fmt.Errorf("CORTEX_SKILLS_URL %s: %w", url, last)
 }
 
 func fetchSkills(ctx context.Context, url string) ([]host.Skill, error) {
@@ -67,14 +78,6 @@ func fetchSkills(ctx context.Context, url string) ([]host.Skill, error) {
 	}
 	var c host.Catalog
 	if err := json.NewDecoder(res.Body).Decode(&c); err != nil {
-		return nil, err
-	}
-	return c.Skills, nil
-}
-
-func decodeSkills(raw []byte) ([]host.Skill, error) {
-	var c host.Catalog
-	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, err
 	}
 	return c.Skills, nil

@@ -51,9 +51,9 @@ func run() error {
 		_ = shutdownTelemetry(flush)
 	}()
 
-	skills, err := skillsFromEnv(ctx)
+	skills, err := skillsFromFile()
 	if err != nil {
-		slog.Error("cortex: starting without the app's skills", "error", err)
+		return err
 	}
 	cfg.Skills = skills
 
@@ -70,6 +70,9 @@ func run() error {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
+	if url := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_URL")); url != "" {
+		go loadSkillsFromURL(ctx, url, h.SetSkills)
+	}
 	slog.Info("cortex listening", "addr", addr, "agent", cfg.Agent.Name, "skills", len(cfg.Skills), "card", len(h.Card().Skills), "version", version)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
