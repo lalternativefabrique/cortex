@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,10 +66,25 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		return end(a2a.TaskStateFailed, err.Error())
 	}
 	system := instructions(h.cfg.Agent.Instructions, turnContext)
+	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
+	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
+		task, ok := h.tasks[strings.TrimSpace(name)]
+		if !ok {
+			return end(a2a.TaskStateFailed, fmt.Sprintf("this agent declares no task %q", name))
+		}
+		if err := task.checkInput(asked); err != nil {
+			return end(a2a.TaskStateFailed, err.Error())
+		}
+		log = log.With("skill", task.ID)
+		system = instructions(instructions(h.cfg.Agent.Instructions, task.Instructions), turnContext)
+		if declared, ok := task.outputSchema(); ok {
+			schema, hasSchema = declared, true
+		}
+	}
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
 	var respond *respondTool
-	if schema, ok := outputSchema(reqCtx.Message.Metadata); ok {
+	if hasSchema {
 		respond, err = newRespondTool(schema, stopRun)
 		if err != nil {
 			return end(a2a.TaskStateFailed, err.Error())
@@ -221,11 +237,46 @@ type stream struct {
 	// structured holds text back: the answer is what respond records.
 	structured bool
 
-	mu      sync.Mutex
-	started bool
+	mu        sync.Mutex
+	stepStart time.Time
+	started   bool
 	// pending is the latest chunk, held back so the last one can be marked
 	// lastChunk without an empty part after it.
 	pending string
+}
+
+func (s *stream) OnStepStart(int) {
+	s.mu.Lock()
+	s.stepStart = time.Now()
+	s.mu.Unlock()
+}
+
+// OnModelEnd reports each model step as a "step" artifact: what the model
+// reasoned, which tools it asked for, what it cost in tokens and how long it
+// took, so a caller can follow the turn's thinking.
+func (s *stream) OnModelEnd(step int, _ string, reasoning string, toolCalls []agent.ToolCall, usage agent.Usage) {
+	names := make([]string, 0, len(toolCalls))
+	for _, c := range toolCalls {
+		names = append(names, c.Name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data := map[string]any{
+		"step":                step,
+		"reasoning":           reasoning,
+		"tool_calls":          names,
+		"input_tokens":        usage.Input,
+		"cached_input_tokens": usage.CachedInput,
+		"output_tokens":       usage.Output,
+	}
+	if !s.stepStart.IsZero() {
+		data["duration_ms"] = time.Since(s.stepStart).Milliseconds()
+	}
+	ev := a2a.NewArtifactEvent(s.task, a2a.DataPart{Data: data})
+	ev.Artifact.Name = "step"
+	if err := s.queue.Write(s.ctx, ev); err != nil {
+		slog.Warn("host: step not reported", "step", step, "error", err)
+	}
 }
 
 func (s *stream) OnTextDelta(text string) {

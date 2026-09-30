@@ -262,6 +262,9 @@ func TestMessageSendReturnsTheWholeAnswer(t *testing.T) {
 	var text strings.Builder
 	parts := 0
 	for _, a := range reply.Result.Artifacts {
+		if a.Name != "answer" {
+			continue
+		}
 		for _, p := range a.Parts {
 			text.WriteString(p.Text)
 			parts++

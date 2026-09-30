@@ -41,6 +41,8 @@ type Request struct {
 	ConversationID string
 	// MCPHeaders ride on every MCP call of the turn, never to the model.
 	MCPHeaders map[string]string
+	// Skill names the declared task the turn runs; Text is then its input.
+	Skill string
 }
 
 // ToolCall is one tool the agent called during the turn.
@@ -51,9 +53,22 @@ type ToolCall struct {
 	Error     string          `json:"error"`
 }
 
+// Step is one model call of the turn: what the model reasoned, the tools it
+// asked for, its tokens and duration.
+type Step struct {
+	Step              int      `json:"step"`
+	Reasoning         string   `json:"reasoning"`
+	ToolCalls         []string `json:"tool_calls"`
+	InputTokens       int      `json:"input_tokens"`
+	CachedInputTokens int      `json:"cached_input_tokens"`
+	OutputTokens      int      `json:"output_tokens"`
+	DurationMs        int64    `json:"duration_ms"`
+}
+
 // Turn is what a turn produced besides its answer.
 type Turn struct {
 	ToolCalls []ToolCall
+	Steps     []Step
 }
 
 // Ask runs a turn whose answer must be a T: the schema of T is sent with
@@ -143,13 +158,21 @@ func (t task) text() string {
 func (t task) turn() Turn {
 	var turn Turn
 	for _, a := range t.Artifacts {
-		if a.Name != "tool-call" {
-			continue
-		}
 		for _, p := range a.Parts {
-			var call ToolCall
-			if p.Kind == "data" && json.Unmarshal(p.Data, &call) == nil {
-				turn.ToolCalls = append(turn.ToolCalls, call)
+			if p.Kind != "data" {
+				continue
+			}
+			switch a.Name {
+			case "tool-call":
+				var call ToolCall
+				if json.Unmarshal(p.Data, &call) == nil {
+					turn.ToolCalls = append(turn.ToolCalls, call)
+				}
+			case "step":
+				var step Step
+				if json.Unmarshal(p.Data, &step) == nil {
+					turn.Steps = append(turn.Steps, step)
+				}
 			}
 		}
 	}
@@ -169,6 +192,9 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 	}
 	if schema != nil {
 		meta[host.OutputSchemaKey] = schema
+	}
+	if r.Skill != "" {
+		meta[host.SkillKey] = r.Skill
 	}
 	conversation := r.ConversationID
 	if conversation == "" {

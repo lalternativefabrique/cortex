@@ -41,6 +41,10 @@ const (
 	// checked against the schema, and it is returned as one data part of the
 	// "answer" artifact instead of text.
 	OutputSchemaKey = "outputSchema"
+	// SkillKey names the declared task a turn runs: the host applies its
+	// instructions and output schema, and checks the message text, the
+	// task's input as JSON, against its input schema.
+	SkillKey = "skill"
 )
 
 // Agent is what the container declares itself to be.
@@ -57,6 +61,9 @@ type Config struct {
 	// Tools are offered on every turn beside the MCP servers' tools: what
 	// the host itself can do, such as reading the web.
 	Tools []agent.Tool
+	// Tasks are the actions the app declared for this agent (tasks.json):
+	// listed on the Agent Card and at /tasks, run by name.
+	Tasks []Task
 	// Recall nil keeps no memory; recall_memory is offered only with it.
 	Recall recall.Store
 	// Token is what every caller of /a2a presents as Bearer. Empty refuses
@@ -75,6 +82,7 @@ type Config struct {
 
 type Host struct {
 	cfg           Config
+	tasks         map[string]declaredTask
 	servers       *servers
 	conversations *conversations
 	handler       http.Handler
@@ -87,7 +95,11 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if strings.TrimSpace(cfg.Provider.BaseURL) == "" {
 		return nil, fmt.Errorf("host: a model endpoint is required")
 	}
-	h := &Host{cfg: cfg, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
+	tasks, err := compileTasks(cfg.Tasks)
+	if err != nil {
+		return nil, err
+	}
+	h := &Host{cfg: cfg, tasks: tasks, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
 	h.handler = a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(&executor{host: h}))
 	return h, nil
 }
@@ -107,6 +119,7 @@ func (h *Host) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(h.Card())
 	})
+	mux.HandleFunc("GET /tasks", h.serveTasks)
 	mux.Handle("POST /a2a", h.authorized(h.handler))
 	return mux
 }
@@ -134,7 +147,10 @@ func (h *Host) accepts(ctx context.Context, bearer string) bool {
 // can call, its own and those its reachable MCP servers offer.
 func (h *Host) Card() a2a.AgentCard {
 	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.offered()...)
-	skills := make([]a2a.AgentSkill, 0, len(tools)+1)
+	skills := make([]a2a.AgentSkill, 0, len(h.cfg.Tasks)+len(tools)+1)
+	for _, t := range h.cfg.Tasks {
+		skills = append(skills, h.tasks[t.ID].skill())
+	}
 	for _, t := range tools {
 		skills = append(skills, a2a.AgentSkill{ID: t.Name(), Name: t.Name(), Description: firstLine(t.Description()), Tags: []string{"tool"}})
 	}
