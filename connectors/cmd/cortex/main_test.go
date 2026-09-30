@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
 
@@ -123,5 +124,55 @@ func TestWithoutTornadTheAgentHasNoWebOfItsOwn(t *testing.T) {
 	got, err := webToolsFromEnv()
 	if err != nil || got != nil {
 		t.Errorf("got %v, %v", got, err)
+	}
+}
+
+const catalogJSON = `{"skills":[{"id":"find_sources","name":"Sources","description":"Find sources.","instructions":"You search.","input":{"type":"object"},"output":{"type":"object"}}]}`
+
+func TestSkillsLoadFromTheAppsURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(catalogJSON))
+	}))
+	defer srv.Close()
+	t.Setenv("CORTEX_SKILLS_FILE", "")
+	t.Setenv("CORTEX_SKILLS_URL", srv.URL+"/api/v1/cortex/skills.json")
+	got, err := skillsFromEnv(context.Background())
+	if err != nil || len(got) != 1 || got[0].ID != "find_sources" || got[0].Instructions != "You search." {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestSkillsLoadFromAFile(t *testing.T) {
+	path := t.TempDir() + "/skills.json"
+	if err := os.WriteFile(path, []byte(catalogJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CORTEX_SKILLS_FILE", path)
+	got, err := skillsFromEnv(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestWithoutSkillsTheAgentDeclaresNone(t *testing.T) {
+	t.Setenv("CORTEX_SKILLS_FILE", "")
+	t.Setenv("CORTEX_SKILLS_URL", "")
+	got, err := skillsFromEnv(context.Background())
+	if err != nil || got != nil {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestAnAppThatNeverAnswersEndsTheWaitWithAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	t.Setenv("CORTEX_SKILLS_FILE", "")
+	t.Setenv("CORTEX_SKILLS_URL", srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := skillsFromEnv(ctx); err == nil {
+		t.Fatal("an app that never serves its skills must end the wait with an error")
 	}
 }
