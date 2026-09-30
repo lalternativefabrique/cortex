@@ -7,7 +7,7 @@ require (
 	github.com/lalternative/packages/go/search v0.3.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
-	github.com/lalternative/packages/tornad/sdk-go v0.1.0
+	github.com/lalternative/packages/tornad/sdk-go v0.2.0
 	golang.org/x/image v0.46.0
 )
 

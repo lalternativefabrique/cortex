@@ -16,7 +16,7 @@ func TestFetchReadsThroughTornad(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotKey = r.Header.Get("X-Tornad-Key")
+		gotKey = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestFetchDefaultsMaxRunes(t *testing.T) {
 func TestFetchSendsNoKeyHeaderWhenUnset(t *testing.T) {
 	var hadKey bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, hadKey = r.Header[http.CanonicalHeaderKey("X-Tornad-Key")]
+		_, hadKey = r.Header[http.CanonicalHeaderKey("Authorization")]
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"title": "t", "text": "x"})
 	}))

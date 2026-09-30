@@ -85,8 +85,8 @@ github.com/lalternative/packages/go/svcauth v0.6.0 h1:5jWnmzTt/tHsBCKTr9qG29GOGD
 github.com/lalternative/packages/go/svcauth v0.6.0/go.mod h1:I3AFiK7snrcH8KgUOEI3l/1RZ3leJtM6BF3mP11wqsY=
 github.com/lalternative/packages/skalpai/sdk-go v0.10.0 h1:crb+LB4mQ/TqnQ3IxI1Nr1sNAxLOajLljJCC7uFobHM=
 github.com/lalternative/packages/skalpai/sdk-go v0.10.0/go.mod h1:ROSldQYaYqgLKAdyGkFJnmU7TTb/aLn+9R3xeKACUJA=
-github.com/lalternative/packages/tornad/sdk-go v0.1.0 h1:0h637HwNmzUyqfk78lqoIgDkp2Dpi3LqOWVVNiwMO7k=
-github.com/lalternative/packages/tornad/sdk-go v0.1.0/go.mod h1:K3BjVthlRJjVn5zxoGsogJPFjpwjFxypPdVI+G51dxY=
+github.com/lalternative/packages/tornad/sdk-go v0.2.0 h1:rw2p9QUF+7NQiGSS3AvfyCaDpUVXriv0RBfWUzquVnQ=
+github.com/lalternative/packages/tornad/sdk-go v0.2.0/go.mod h1:K3BjVthlRJjVn5zxoGsogJPFjpwjFxypPdVI+G51dxY=
 github.com/lestrrat-go/blackmagic v1.0.4 h1:IwQibdnf8l2KoO+qC3uT4OaTWsW7tuRQXy9TRN9QanA=
 github.com/lestrrat-go/blackmagic v1.0.4/go.mod h1:6AWFyKNNj0zEXQYfTMPfZrAXUWUfTIZ5ECEUEJaijtw=
 github.com/lestrrat-go/dsig v1.3.0 h1:phjMOCXvYzhuIgn7Voe2rex8z166vGfxRxmqM25P9/Q=
