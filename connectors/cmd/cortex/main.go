@@ -57,11 +57,20 @@ func run() error {
 	}
 	cfg.Skills, cfg.AppInstructions = shipped.Skills, shipped.Instructions
 
+	spread, err := clusterFromEnv(ctx, &cfg)
+	if err != nil {
+		return err
+	}
+	defer spread.stop()
+
 	h, err := host.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer h.Close()
+	if err := spread.start(ctx, h); err != nil {
+		return err
+	}
 
 	srv := &http.Server{Addr: addr, Handler: h.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -99,9 +108,10 @@ func configFromEnv() (host.Config, string, error) {
 			Instructions: instructions,
 		},
 		Provider: agent.Provider{
-			BaseURL: os.Getenv("CORTEX_BASE_URL"),
-			APIKey:  os.Getenv("CORTEX_API_KEY"),
-			Model:   envOr("CORTEX_MODEL", "lalter"),
+			BaseURL:         os.Getenv("CORTEX_BASE_URL"),
+			APIKey:          os.Getenv("CORTEX_API_KEY"),
+			Model:           envOr("CORTEX_MODEL", "lalter"),
+			ReasoningEffort: strings.TrimSpace(os.Getenv("CORTEX_REASONING_EFFORT")),
 		},
 		Token:         os.Getenv("CORTEX_TOKEN"),
 		PublicURL:     os.Getenv("CORTEX_PUBLIC_URL"),
@@ -121,6 +131,9 @@ func configFromEnv() (host.Config, string, error) {
 	cfg.Verify = verify
 	if cfg.Token == "" && cfg.Verify == nil {
 		return cfg, "", fmt.Errorf("CORTEX_TOKEN or CORTEX_ISSUER_URL is required: every caller of /a2a proves who it is")
+	}
+	if e := cfg.Provider.ReasoningEffort; e != "" && !agent.ValidReasoningEffort(e) {
+		return cfg, "", fmt.Errorf("CORTEX_REASONING_EFFORT %q is not one of %s", e, strings.Join(agent.ReasoningEfforts, ", "))
 	}
 	cfg.Provider.HTTPClient = &http.Client{Transport: lentToken{}}
 	if path := os.Getenv("CORTEX_MCP_CONFIG"); path != "" {

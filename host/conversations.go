@@ -1,6 +1,7 @@
 package host
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -28,16 +29,32 @@ func newConversations(limit int) *conversations {
 	return &conversations{limit: limit, byID: map[string]*conversation{}}
 }
 
-func (c *conversations) history(id string) []agent.Message {
+// History keeps each conversation's messages, for whichever instance runs
+// its next turn.
+type History interface {
+	Load(ctx context.Context, conversation string) ([]agent.Message, error)
+	Append(ctx context.Context, conversation string, messages ...agent.Message) error
+}
+
+// NewMemoryHistory keeps conversations in this process, the least recently
+// spoken dropped first past limit.
+func NewMemoryHistory(limit int) History {
+	if limit <= 0 {
+		limit = maxConversations
+	}
+	return newConversations(limit)
+}
+
+func (c *conversations) Load(_ context.Context, id string) ([]agent.Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if conv, ok := c.byID[id]; ok {
-		return append([]agent.Message(nil), conv.messages...)
+		return append([]agent.Message(nil), conv.messages...), nil
 	}
-	return nil
+	return nil, nil
 }
 
-func (c *conversations) append(id string, messages ...agent.Message) {
+func (c *conversations) Append(_ context.Context, id string, messages ...agent.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	conv, ok := c.byID[id]
@@ -50,6 +67,7 @@ func (c *conversations) append(id string, messages ...agent.Message) {
 	}
 	conv.messages = append(conv.messages, messages...)
 	conv.used = time.Now()
+	return nil
 }
 
 func (c *conversations) evictOldest() {

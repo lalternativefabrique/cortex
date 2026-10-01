@@ -29,43 +29,58 @@ type executor struct {
 var _ a2asrv.AgentExecutor = (*executor)(nil)
 
 func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	subject, headers, turnContext := metadata(reqCtx.Message)
-	ctx = withTurnToken(ctx, reqCtx.Message)
-	log := taskLogger(e.host, reqCtx).With("subject", subject)
-	started := time.Now()
-	log.InfoContext(ctx, "cortex: task started", "resumed", reqCtx.StoredTask != nil)
-	end := func(state a2a.TaskState, why string) error {
-		logTaskEnd(ctx, log, state, why, time.Since(started))
-		return finish(ctx, queue, reqCtx, state, why)
-	}
-
-	if reqCtx.StoredTask == nil {
-		if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateSubmitted, nil)); err != nil {
+	turn := Turn{TaskID: reqCtx.TaskID, ContextID: reqCtx.ContextID, Message: reqCtx.Message, Resumed: reqCtx.StoredTask != nil}
+	if !turn.Resumed {
+		if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(turn, a2a.TaskStateSubmitted, nil)); err != nil {
 			return err
 		}
 	}
-	asked := messageText(reqCtx.Message)
+	emit := func(ctx context.Context, ev a2a.Event) error { return queue.Write(ctx, ev) }
+	err := e.host.turns.Dispatch(ctx, turn, emit)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	turnLogger(e.host, turn).WarnContext(ctx, "cortex: turn not run", "error", err)
+	return finish(ctx, emit, turn, a2a.TaskStateFailed, err.Error())
+}
+
+// run answers one turn as one run of the agent, on the instance that took it.
+func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
+	subject, headers, turnContext := metadata(turn.Message)
+	ctx = withTurnToken(ctx, turn.Message)
+	log := turnLogger(h, turn).With("subject", subject)
+	started := time.Now()
+	log.InfoContext(ctx, "cortex: task started", "resumed", turn.Resumed)
+	end := func(state a2a.TaskState, why string) error {
+		logTaskEnd(ctx, log, state, why, time.Since(started))
+		return finish(ctx, emit, turn, state, why)
+	}
+
+	asked := messageText(turn.Message)
 	if asked == "" {
 		return end(a2a.TaskStateFailed, "a text message is required")
 	}
-	if err := queue.Write(ctx, a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateWorking, nil)); err != nil {
+	if turnTokenExpired(TurnToken(ctx), time.Now()) {
+		return end(a2a.TaskStateFailed, "this turn waited longer than the identity lent to it lasts; send it again")
+	}
+	if err := emit(ctx, a2a.NewStatusUpdateEvent(turn, a2a.TaskStateWorking, nil)); err != nil {
 		return err
 	}
 	log.InfoContext(ctx, "cortex: task working")
 
-	h := e.host
+	meta := turn.Message.Metadata
 	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.forTurn()...)
 	var memory *recall.Recorder
-	if h.cfg.Recall != nil && subject != "" {
+	if h.cfg.Recall != nil && subject != "" && recallWanted(meta) {
 		scope := recall.Scope{Subject: subject, Agent: h.cfg.Agent.Name}
 		tools = append(tools, recall.NewTool(h.cfg.Recall, scope))
-		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, reqCtx.ContextID)
+		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, turn.ContextID)
 	}
 	provider := h.cfg.Provider
 	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
 	system := instructions(base, turnContext)
-	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
-	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
+	schema, hasSchema := outputSchema(meta)
+	if name, _ := meta[SkillKey].(string); strings.TrimSpace(name) != "" {
 		_, skills := h.declaredSkills()
 		declared, ok := skills[strings.TrimSpace(name)]
 		if !ok {
@@ -83,9 +98,14 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 			provider.Model = declared.Model
 		}
 	}
-	if model, _ := reqCtx.Message.Metadata[ModelKey].(string); strings.TrimSpace(model) != "" {
+	if model, _ := meta[ModelKey].(string); strings.TrimSpace(model) != "" {
 		provider.Model = strings.TrimSpace(model)
 	}
+	effort, err := reasoningEffort(meta, provider)
+	if err != nil {
+		return end(a2a.TaskStateFailed, err.Error())
+	}
+	provider.ReasoningEffort = effort
 	log = log.With("model", provider.Model)
 	client, err := agent.NewClient(provider)
 	if err != nil {
@@ -102,7 +122,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		tools = append(tools, respond)
 		system = withRespondInstruction(system)
 	}
-	stream := &stream{ctx: ctx, queue: queue, task: reqCtx, memory: memory, answer: a2a.NewArtifactID(), structured: respond != nil}
+	stream := &stream{ctx: ctx, emit: emit, task: turn, memory: memory, answer: a2a.NewArtifactID(), structured: respond != nil}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
 		Tools:         tools,
@@ -118,19 +138,23 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
-	conversation := conversationKey(subject, reqCtx.ContextID)
-	history := append(h.conversations.history(conversation), asking)
-	memory.Said(reqCtx.Message.ID, "user", asked)
+	conversation := turn.Conversation()
+	past, err := h.history.Load(ctx, conversation)
+	if err != nil {
+		log.WarnContext(ctx, "cortex: history not loaded", "error", err)
+	}
+	history := append(past, asking)
+	memory.Said(turn.Message.ID, "user", asked)
 
 	runWith := mcp.WithHeaders(runCtx, headers)
 	res, err := runner.Run(runWith, history)
 	if respond != nil {
-		return e.endStructured(ctx, end, stream, respond, runner, runWith, conversation, asking, history, res, err)
+		return h.endStructured(ctx, end, stream, respond, runner, runWith, conversation, asking, history, res, err)
 	}
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}
-	h.conversations.append(conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: res.Text})
+	h.remember(ctx, log, conversation, asking, res.Text)
 	memory.Said(uuid.NewString(), "assistant", res.Text)
 
 	if err := stream.close(res.Text); err != nil {
@@ -139,15 +163,21 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	return end(a2a.TaskStateCompleted, "")
 }
 
+func (h *Host) remember(ctx context.Context, log *slog.Logger, conversation string, asking agent.Message, answer string) {
+	if err := h.history.Append(ctx, conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: answer}); err != nil {
+		log.WarnContext(ctx, "cortex: history not saved", "error", err)
+	}
+}
+
 // endStructured finishes a turn that asked for an output schema: the answer
 // is what respond recorded. A turn that ended in text instead is reminded
 // to call respond, a bounded number of times.
-func (e *executor) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, stream *stream, respond *respondTool,
+func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, stream *stream, respond *respondTool,
 	runner *agent.Runner, runCtx context.Context, conversation string, asking agent.Message, history []agent.Message, res agent.Result, err error,
 ) error {
 	for reminders := 0; ; reminders++ {
 		if answer, ok := respond.recorded(); ok {
-			e.host.conversations.append(conversation, asking, agent.Message{Role: agent.RoleAssistant, Content: string(answer)})
+			h.remember(ctx, slog.Default(), conversation, asking, string(answer))
 			stream.memory.Said(uuid.NewString(), "assistant", string(answer))
 			if err := stream.data(answer); err != nil {
 				return err
@@ -168,15 +198,16 @@ func (e *executor) endStructured(ctx context.Context, end func(a2a.TaskState, st
 }
 
 func (e *executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	taskLogger(e.host, reqCtx).InfoContext(ctx, "cortex: task canceled")
-	return finish(ctx, queue, reqCtx, a2a.TaskStateCanceled, "")
+	turn := Turn{TaskID: reqCtx.TaskID, ContextID: reqCtx.ContextID}
+	turnLogger(e.host, turn).InfoContext(ctx, "cortex: task canceled")
+	return finish(ctx, func(ctx context.Context, ev a2a.Event) error { return queue.Write(ctx, ev) }, turn, a2a.TaskStateCanceled, "")
 }
 
-func taskLogger(h *Host, reqCtx *a2asrv.RequestContext) *slog.Logger {
+func turnLogger(h *Host, turn Turn) *slog.Logger {
 	return slog.Default().With(
 		"agent", h.cfg.Agent.Name,
-		"context_id", reqCtx.ContextID,
-		"task_id", string(reqCtx.TaskID),
+		"context_id", turn.ContextID,
+		"task_id", string(turn.TaskID),
 	)
 }
 
@@ -190,14 +221,14 @@ func logTaskEnd(ctx context.Context, log *slog.Logger, state a2a.TaskState, why 
 }
 
 // finish closes the task; a2a-go ends a stream on a final event only.
-func finish(ctx context.Context, queue eventqueue.Queue, reqCtx *a2asrv.RequestContext, state a2a.TaskState, why string) error {
+func finish(ctx context.Context, emit Emit, turn Turn, state a2a.TaskState, why string) error {
 	var msg *a2a.Message
 	if why != "" {
-		msg = a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: why})
+		msg = a2a.NewMessageForTask(a2a.MessageRoleAgent, turn, a2a.TextPart{Text: why})
 	}
-	ev := a2a.NewStatusUpdateEvent(reqCtx, state, msg)
+	ev := a2a.NewStatusUpdateEvent(turn, state, msg)
 	ev.Final = true
-	return queue.Write(ctx, ev)
+	return emit(ctx, ev)
 }
 
 func messageText(msg *a2a.Message) string {
@@ -240,8 +271,8 @@ func metadata(msg *a2a.Message) (string, map[string]string, string) {
 type stream struct {
 	agent.NopCallback
 	ctx    context.Context
-	queue  eventqueue.Queue
-	task   *a2asrv.RequestContext
+	emit   Emit
+	task   Turn
 	memory *recall.Recorder
 	answer a2a.ArtifactID
 	// structured holds text back: the answer is what respond records.
@@ -284,7 +315,7 @@ func (s *stream) OnModelEnd(step int, _ string, reasoning string, toolCalls []ag
 	}
 	ev := a2a.NewArtifactEvent(s.task, a2a.DataPart{Data: data})
 	ev.Artifact.Name = "step"
-	if err := s.queue.Write(s.ctx, ev); err != nil {
+	if err := s.emit(s.ctx, ev); err != nil {
 		slog.Warn("host: step not reported", "step", step, "error", err)
 	}
 }
@@ -296,7 +327,7 @@ func (s *stream) OnTextDelta(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending != "" {
-		_ = s.queue.Write(s.ctx, s.chunk(s.pending, false))
+		_ = s.emit(s.ctx, s.chunk(s.pending, false))
 	}
 	s.pending = text
 }
@@ -320,7 +351,7 @@ func (s *stream) close(text string) error {
 	} else if s.started {
 		return nil
 	}
-	return s.queue.Write(s.ctx, s.chunk(text, true))
+	return s.emit(s.ctx, s.chunk(text, true))
 }
 
 // data sends a structured answer as the answer artifact's one data part.
@@ -338,7 +369,7 @@ func (s *stream) data(answer json.RawMessage) error {
 	ev.LastChunk = true
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.queue.Write(s.ctx, ev)
+	return s.emit(s.ctx, ev)
 }
 
 func (s *stream) OnToolEnd(trace agent.ToolCallTrace) {
@@ -359,7 +390,7 @@ func (s *stream) OnToolEnd(trace agent.ToolCallTrace) {
 	ev.Artifact.Name = "tool-call"
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.queue.Write(s.ctx, ev); err != nil {
+	if err := s.emit(s.ctx, ev); err != nil {
 		slog.Warn("host: tool call not reported", "tool", trace.Name, "error", err)
 	}
 }

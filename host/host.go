@@ -49,6 +49,12 @@ const (
 	// ModelKey asks for a model for this run in place of the agent's own;
 	// the endpoint the agent calls decides whether it serves it.
 	ModelKey = "model"
+	// ReasoningEffortKey asks how much the model thinks before answering on
+	// this run: high, medium, low or none.
+	ReasoningEffortKey = "reasoningEffort"
+	// RecallKey false runs the turn without memory: nothing recalled, nothing
+	// written.
+	RecallKey = "recall"
 )
 
 // Agent is what the container declares itself to be.
@@ -85,6 +91,15 @@ type Config struct {
 	ContextWindow int
 	// Version is what the Agent Card reports.
 	Version string
+	// Turns decides where and when turns run. Nil runs them in this process,
+	// DefaultConcurrency at once.
+	Turns Turns
+	// History keeps conversations between turns. Nil keeps them in memory,
+	// which only one instance can share.
+	History History
+	// OnSkillsRefreshed is called after POST /skills/refresh reloaded this
+	// instance's skills, so the other instances can reload theirs.
+	OnSkillsRefreshed func(ctx context.Context)
 }
 
 type Host struct {
@@ -95,7 +110,8 @@ type Host struct {
 	skillList       []Skill
 	skills          map[string]declaredSkill
 	servers         *servers
-	conversations   *conversations
+	turns           Turns
+	history         History
 	handler         http.Handler
 }
 
@@ -110,9 +126,24 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, appInstructions: cfg.AppInstructions, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
+	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, appInstructions: cfg.AppInstructions, servers: startServers(ctx, cfg.MCP), turns: cfg.Turns, history: cfg.History}
+	if h.history == nil {
+		h.history = NewMemoryHistory(maxConversations)
+	}
+	if h.turns == nil {
+		h.turns = NewLocalTurns(DefaultConcurrency, DefaultQueueWait)
+	}
+	if local, ok := h.turns.(*LocalTurns); ok {
+		local.bind(h.run)
+	}
 	h.handler = a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(&executor{host: h}))
 	return h, nil
+}
+
+// Serve takes turns until ctx ends. A host whose Turns run in this process
+// answers without it.
+func (h *Host) Serve(ctx context.Context) error {
+	return h.turns.Serve(ctx, h.run)
 }
 
 // Close stops the MCP servers the host started.
@@ -210,13 +241,15 @@ func cortexExtension() a2a.AgentExtension {
 		Description: "Message metadata cortex reads, the artifacts it adds, and where its skills are declared in full.",
 		Params: map[string]any{
 			"metadata": map[string]string{
-				SkillKey:        "the declared skill the message runs; the message text is then its input, as JSON",
-				ModelKey:        "a model for this run in place of the agent's own; the model endpoint decides whether it serves it",
-				OutputSchemaKey: "a JSON Schema the answer must match; the answer then comes as one data part of the answer artifact",
-				SubjectKey:      "the person the run acts for, its memory scope",
-				TurnContextKey:  "text added to the agent's instructions for this run only",
-				MCPHeadersKey:   "headers every MCP call of the run sends, never shown to the model",
-				TurnTokenKey:    "the Bearer the run's model and memory calls present",
+				SkillKey:           "the declared skill the message runs; the message text is then its input, as JSON",
+				ModelKey:           "a model for this run in place of the agent's own; the model endpoint decides whether it serves it",
+				OutputSchemaKey:    "a JSON Schema the answer must match; the answer then comes as one data part of the answer artifact",
+				SubjectKey:         "the person the run acts for, its memory scope",
+				TurnContextKey:     "text added to the agent's instructions for this run only",
+				MCPHeadersKey:      "headers every MCP call of the run sends, never shown to the model",
+				TurnTokenKey:       "the Bearer the run's model and memory calls present",
+				ReasoningEffortKey: "how much the model thinks on this run: high, medium, low or none",
+				RecallKey:          "false runs without memory: nothing recalled, nothing written",
 			},
 			"artifacts": map[string]string{
 				"answer":    "the answer: text chunks, or one data part under an output schema",

@@ -217,6 +217,9 @@ func (h *Host) refreshSkills(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		http.Error(w, err.Error(), http.StatusBadGateway)
 	default:
+		if h.cfg.OnSkillsRefreshed != nil {
+			h.cfg.OnSkillsRefreshed(r.Context())
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]int{"skills": n})
 	}
