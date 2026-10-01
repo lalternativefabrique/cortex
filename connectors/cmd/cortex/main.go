@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternative/packages/go/cortex/connectors/cluster"
 	lalterrecall "github.com/lalternative/packages/go/cortex/connectors/recall/lalter"
 	"github.com/lalternative/packages/go/cortex/host"
 	"github.com/lalternative/packages/go/cortex/mcp"
@@ -75,7 +76,7 @@ func run() error {
 	srv := &http.Server{Addr: addr, Handler: h.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		shutdown, cancel := context.WithTimeout(context.Background(), cluster.DefaultDrain)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()

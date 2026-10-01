@@ -38,6 +38,8 @@ const (
 	lockTTL   = 6 * beatEvery
 	busyRetry = 500 * time.Millisecond
 	opTimeout = 5 * time.Second
+
+	DefaultDrain = 90 * time.Second
 )
 
 // Config names what Turns needs beyond the connection.
@@ -52,6 +54,9 @@ type Config struct {
 	// Silence is how long a started turn may go without a word from the
 	// instance running it before it is taken for lost.
 	Silence time.Duration
+	// Drain is how long an instance told to stop keeps running the turns it
+	// took, taking no new one, before it cuts them.
+	Drain time.Duration
 }
 
 // Turns is host.Turns over NATS.
@@ -69,6 +74,8 @@ var _ host.Turns = (*Turns)(nil)
 
 var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
+var safeTaskID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
 func token(agent string) string {
 	return strings.ToLower(unsafeName.ReplaceAllString(agent, "_"))
 }
@@ -85,6 +92,9 @@ func NewTurns(ctx context.Context, nc *nats.Conn, cfg Config) (*Turns, error) {
 	}
 	if cfg.Silence <= 0 {
 		cfg.Silence = 6 * beatEvery
+	}
+	if cfg.Drain <= 0 {
+		cfg.Drain = DefaultDrain
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -126,14 +136,21 @@ func (t *Turns) subject(kind string, task a2a.TaskID) string {
 	return "cortex." + t.name + "." + kind + "." + string(task)
 }
 
-// Dispatch queues the turn and relays its events until its final one.
+// Dispatch queues the turn and relays its events until its final one. The
+// subscription buffers without bound: a caller reading slowly must not lose
+// the end of its answer.
 func (t *Turns) Dispatch(ctx context.Context, turn host.Turn, emit host.Emit) error {
-	frames := make(chan *nats.Msg, 256)
-	sub, err := t.nc.ChanSubscribe(t.subject("events", turn.TaskID), frames)
+	if !safeTaskID.MatchString(string(turn.TaskID)) {
+		return fmt.Errorf("cluster: task id %q cannot name a subject", turn.TaskID)
+	}
+	sub, err := t.nc.SubscribeSync(t.subject("events", turn.TaskID))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sub.Unsubscribe() }()
+	if err := sub.SetPendingLimits(-1, -1); err != nil {
+		return err
+	}
 	if err := t.nc.Flush(); err != nil {
 		return err
 	}
@@ -146,42 +163,45 @@ func (t *Turns) Dispatch(ctx context.Context, turn host.Turn, emit host.Emit) er
 	}
 
 	started := false
-	wait := time.NewTimer(t.cfg.QueueWait)
-	defer wait.Stop()
+	deadline := time.Now().Add(t.cfg.QueueWait)
 	for {
-		select {
-		case <-ctx.Done():
+		waitCtx, cancel := context.WithDeadline(ctx, deadline)
+		msg, err := sub.NextMsgWithContext(waitCtx)
+		cancel()
+		if err != nil {
 			t.cancel(turn.TaskID)
-			return ctx.Err()
-		case <-wait.C:
-			t.cancel(turn.TaskID)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("cluster: turn events: %w", err)
+			}
 			if started {
 				return errors.New("the instance running this turn went silent")
 			}
 			return host.ErrBusy
-		case msg := <-frames:
-			switch msg.Header.Get(kindHeader) {
-			case kindStarted:
-				started = true
-			case kindBeat:
-			case kindEnd:
-				if why := msg.Header.Get(errorHeader); why != "" {
-					return errors.New(why)
-				}
-				return nil
-			case kindEvent:
-				ev, err := a2a.UnmarshalEventJSON(msg.Data)
-				if err != nil {
-					return fmt.Errorf("cluster: unreadable event: %w", err)
-				}
-				if err := emit(ctx, ev); err != nil {
-					t.cancel(turn.TaskID)
-					return err
-				}
+		}
+		switch msg.Header.Get(kindHeader) {
+		case kindStarted:
+			started = true
+		case kindEnd:
+			if why := msg.Header.Get(errorHeader); why != "" {
+				return errors.New(why)
 			}
-			if started {
-				wait.Reset(t.cfg.Silence)
+			return nil
+		case kindEvent:
+			ev, err := a2a.UnmarshalEventJSON(msg.Data)
+			if err != nil {
+				t.cancel(turn.TaskID)
+				return fmt.Errorf("cluster: unreadable event: %w", err)
 			}
+			if err := emit(ctx, ev); err != nil {
+				t.cancel(turn.TaskID)
+				return err
+			}
+		}
+		if started {
+			deadline = time.Now().Add(t.cfg.Silence)
 		}
 	}
 }
@@ -195,8 +215,19 @@ func (t *Turns) cancel(task a2a.TaskID) {
 	_ = t.nc.Publish(t.subject("cancel", task), nil)
 }
 
-// Serve takes turns from the queue, Concurrency at once, until ctx ends.
+// Serve takes turns from the queue, Concurrency at once, until ctx ends; the
+// turns it took then run to their end, for Drain at most.
 func (t *Turns) Serve(ctx context.Context, run host.Runner) error {
+	runs, cutRuns := context.WithCancel(context.WithoutCancel(ctx))
+	defer cutRuns()
+	go func() {
+		<-ctx.Done()
+		select {
+		case <-time.After(t.cfg.Drain):
+			cutRuns()
+		case <-runs.Done():
+		}
+	}()
 	cons, err := t.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       "workers",
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -220,7 +251,7 @@ func (t *Turns) Serve(ctx context.Context, run host.Runner) error {
 					}
 					continue
 				}
-				t.take(ctx, msg, run)
+				t.take(runs, msg, run)
 			}
 		}()
 	}
@@ -230,7 +261,7 @@ func (t *Turns) Serve(ctx context.Context, run host.Runner) error {
 
 func (t *Turns) take(ctx context.Context, msg jetstream.Msg, run host.Runner) {
 	var turn host.Turn
-	if err := json.Unmarshal(msg.Data(), &turn); err != nil || turn.TaskID == "" {
+	if err := json.Unmarshal(msg.Data(), &turn); err != nil || !safeTaskID.MatchString(string(turn.TaskID)) {
 		slog.Error("cluster: unreadable turn dropped", "error", err)
 		_ = msg.Term()
 		return

@@ -72,6 +72,7 @@ func clusterFromEnv(ctx context.Context, cfg *host.Config) (clustered, error) {
 	cfg.Turns, cfg.History = turns, history
 
 	instance, _ := os.Hostname()
+	served := make(chan struct{})
 	var refresh *cluster.SkillsRefresh
 	stopRefresh := func() {}
 	cfg.OnSkillsRefreshed = func(ctx context.Context) {
@@ -92,13 +93,22 @@ func clusterFromEnv(ctx context.Context, cfg *host.Config) (clustered, error) {
 			}
 			refresh, stopRefresh = r, stop
 			go func() {
+				defer close(served)
 				if err := h.Serve(ctx); err != nil {
 					slog.Error("cortex: turns no longer served", "error", err)
 				}
 			}()
 			return nil
 		},
-		stop: func() { stopRefresh(); nc.Drain() },
+		stop: func() {
+			select {
+			case <-served:
+			case <-time.After(cluster.DefaultDrain + 5*time.Second):
+				slog.Warn("cortex: turns still running at exit")
+			}
+			stopRefresh()
+			_ = nc.Drain()
+		},
 	}, nil
 }
 
