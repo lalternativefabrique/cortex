@@ -62,14 +62,6 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, reqCtx.ContextID)
 	}
 	provider := h.cfg.Provider
-	if model, _ := reqCtx.Message.Metadata[ModelKey].(string); strings.TrimSpace(model) != "" {
-		provider.Model = strings.TrimSpace(model)
-		log = log.With("model", provider.Model)
-	}
-	client, err := agent.NewClient(provider)
-	if err != nil {
-		return end(a2a.TaskStateFailed, err.Error())
-	}
 	system := instructions(h.cfg.Agent.Instructions, turnContext)
 	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
 	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
@@ -86,6 +78,17 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		if schema2, ok := declared.outputSchema(); ok {
 			schema, hasSchema = schema2, true
 		}
+		if declared.Model != "" {
+			provider.Model = declared.Model
+		}
+	}
+	if model, _ := reqCtx.Message.Metadata[ModelKey].(string); strings.TrimSpace(model) != "" {
+		provider.Model = strings.TrimSpace(model)
+	}
+	log = log.With("model", provider.Model)
+	client, err := agent.NewClient(provider)
+	if err != nil {
+		return end(a2a.TaskStateFailed, err.Error())
 	}
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()

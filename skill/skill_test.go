@@ -312,3 +312,53 @@ func TestSkillsRefreshFromTheirSourceOnDemand(t *testing.T) {
 		t.Errorf("a new skill was not picked up: %d, %+v", res.StatusCode, h.Card().Skills)
 	}
 }
+
+var fastStyle = Declare[styleInput, styleAnswer](Spec[styleInput]{
+	ID: "fast_style", Instructions: "You suggest a brand voice.", Model: "gemma-4-26b-a4b-it",
+})
+
+func TestASkillRunsOnItsModelUnlessTheRunAsksForAnother(t *testing.T) {
+	for _, tc := range []struct{ asked, want string }{{"", "gemma-4-26b-a4b-it"}, {"qwen3-235b-a22b-instruct-2507", "qwen3-235b-a22b-instruct-2507"}} {
+		provider, bodies := model(t, "respond", `{"category":"devtools","energy":25}`, "")
+		h, err := host.New(context.Background(), host.Config{Agent: host.Agent{Name: "p"}, Provider: provider, Token: "tok", Skills: Catalog(fastStyle).Skills})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(h.Handler())
+		if _, _, err := fastStyle.Run(context.Background(), client.Agent{URL: srv.URL, Token: "tok"}, styleInput{Brand: "S"}, Call{Model: tc.asked}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains((*bodies)[0], `"model":"`+tc.want+`"`) {
+			t.Errorf("asked %q: the model got %s", tc.asked, (*bodies)[0])
+		}
+		srv.Close()
+		h.Close()
+	}
+	if fastStyle.Declaration().Model != "gemma-4-26b-a4b-it" {
+		t.Error("the skill's model is not in its declaration")
+	}
+}
+
+func TestTheContextShowsWhatTheAgentRunsWith(t *testing.T) {
+	provider, _ := model(t, "", "", "x")
+	h, err := host.New(context.Background(), host.Config{
+		Agent:    host.Agent{Name: "partage", Instructions: "You are partage's writer."},
+		Provider: provider, Token: "tok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+	res, err := http.Get(srv.URL + "/context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var c host.AgentContext
+	_ = json.NewDecoder(res.Body).Decode(&c)
+	if c.Name != "partage" || c.Instructions != "You are partage's writer." || c.Model != "m" || c.Tools == nil {
+		t.Errorf("context = %+v", c)
+	}
+}

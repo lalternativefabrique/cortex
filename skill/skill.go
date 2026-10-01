@@ -26,6 +26,8 @@ type Spec[In any] struct {
 	Description  string
 	Instructions string
 	Examples     []In
+	// Model is the model this skill runs on; empty uses the agent's.
+	Model string
 }
 
 // Skill is a declared action: its declaration, and the call that runs it.
@@ -39,7 +41,7 @@ func Declare[In, Out any](s Spec[In]) Skill[In, Out] {
 	if s.ID == "" {
 		panic("skill: an id is required")
 	}
-	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions}
+	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions, Model: s.Model}
 	var in In
 	d.Input = mustSchema(s.ID, "input", &in)
 	if !isText[Out]() {

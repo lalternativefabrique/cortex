@@ -18,13 +18,16 @@ import (
 // follows, and the JSON Schemas of what it takes and returns. A message
 // names it with SkillKey; each run is an A2A task.
 type Skill struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Description  string            `json:"description"`
-	Instructions string            `json:"instructions"`
-	Input        json.RawMessage   `json:"input,omitempty"`
-	Output       json.RawMessage   `json:"output,omitempty"`
-	Examples     []json.RawMessage `json:"examples,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	Instructions string          `json:"instructions"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	Output       json.RawMessage `json:"output,omitempty"`
+	// Model is the model this skill runs on, chosen by the app for the
+	// task; empty uses the agent's. A run may still ask for another.
+	Model    string            `json:"model,omitempty"`
+	Examples []json.RawMessage `json:"examples,omitempty"`
 }
 
 // Catalog is what an app publishes, skills.json.
