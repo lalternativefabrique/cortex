@@ -129,7 +129,7 @@ func TestWithoutTornadTheAgentHasNoWebOfItsOwn(t *testing.T) {
 	}
 }
 
-const catalogJSON = `{"skills":[{"id":"find_sources","name":"Sources","description":"Find sources.","instructions":"You search.","input":{"type":"object"},"output":{"type":"object"}}]}`
+const catalogJSON = `{"instructions":"Never use an anglicism.","skills":[{"id":"find_sources","name":"Sources","description":"Find sources.","instructions":"You search.","input":{"type":"object"},"output":{"type":"object"}}]}`
 
 func TestSkillsLoadFromTheAppOnceItAnswers(t *testing.T) {
 	var calls atomic.Int32
@@ -142,10 +142,10 @@ func TestSkillsLoadFromTheAppOnceItAnswers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var got []host.Skill
+	var got host.Catalog
 	done := make(chan struct{})
 	go func() {
-		loadSkillsFromURL(context.Background(), srv.URL, func(s []host.Skill) error { got = s; return nil })
+		loadSkillsFromURL(context.Background(), srv.URL, func(c host.Catalog) error { got = c; return nil })
 		close(done)
 	}()
 	select {
@@ -153,7 +153,7 @@ func TestSkillsLoadFromTheAppOnceItAnswers(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the skills were never loaded")
 	}
-	if len(got) != 1 || got[0].ID != "find_sources" || calls.Load() != 2 {
+	if len(got.Skills) != 1 || got.Skills[0].ID != "find_sources" || got.Instructions != "Never use an anglicism." || calls.Load() != 2 {
 		t.Errorf("got %+v after %d calls", got, calls.Load())
 	}
 }
@@ -166,7 +166,7 @@ func TestLoadingStopsWithTheAgent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		loadSkillsFromURL(ctx, srv.URL, func([]host.Skill) error { t.Error("set on a failing app"); return nil })
+		loadSkillsFromURL(ctx, srv.URL, func(host.Catalog) error { t.Error("set on a failing app"); return nil })
 		close(done)
 	}()
 	cancel()
@@ -184,7 +184,7 @@ func TestSkillsLoadFromAFile(t *testing.T) {
 	}
 	t.Setenv("CORTEX_SKILLS_FILE", path)
 	got, err := skillsFromFile()
-	if err != nil || len(got) != 1 {
+	if err != nil || len(got.Skills) != 1 || got.Instructions == "" {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
@@ -192,7 +192,7 @@ func TestSkillsLoadFromAFile(t *testing.T) {
 func TestWithoutAFileTheAgentStartsWithNoSkill(t *testing.T) {
 	t.Setenv("CORTEX_SKILLS_FILE", "")
 	got, err := skillsFromFile()
-	if err != nil || got != nil {
+	if err != nil || got.Skills != nil || got.Instructions != "" {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }

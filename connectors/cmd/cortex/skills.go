@@ -21,34 +21,34 @@ const (
 )
 
 // skillsFromFile reads CORTEX_SKILLS_FILE, a file shipped with the agent.
-func skillsFromFile() ([]host.Skill, error) {
+func skillsFromFile() (host.Catalog, error) {
 	path := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_FILE"))
 	if path == "" {
-		return nil, nil
+		return host.Catalog{}, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
+		return host.Catalog{}, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
 	}
 	var c host.Catalog
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
+		return host.Catalog{}, fmt.Errorf("CORTEX_SKILLS_FILE: %w", err)
 	}
-	return c.Skills, nil
+	return c, nil
 }
 
 // loadSkillsFromURL fetches the app's skills.json (CORTEX_SKILLS_URL) while
 // the agent already serves, retrying until the app answers, then hands them
 // to set. It returns when they are set or ctx ends.
-func loadSkillsFromURL(ctx context.Context, url string, set func([]host.Skill) error) {
+func loadSkillsFromURL(ctx context.Context, url string, set func(host.Catalog) error) {
 	wait := skillRetryMin
 	for attempt := 1; ; attempt++ {
-		skills, err := fetchSkills(ctx, url)
+		c, err := fetchSkills(ctx, url)
 		if err == nil {
-			err = set(skills)
+			err = set(c)
 		}
 		if err == nil {
-			slog.Info("cortex: skills loaded", "url", url, "skills", len(skills), "attempt", attempt)
+			slog.Info("cortex: skills loaded", "url", url, "skills", len(c.Skills), "app_instructions", c.Instructions != "", "attempt", attempt)
 			return
 		}
 		slog.Warn("cortex: skills not loaded yet", "url", url, "attempt", attempt, "error", err)
@@ -63,22 +63,22 @@ func loadSkillsFromURL(ctx context.Context, url string, set func([]host.Skill) e
 	}
 }
 
-func fetchSkills(ctx context.Context, url string) ([]host.Skill, error) {
+func fetchSkills(ctx context.Context, url string) (host.Catalog, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return host.Catalog{}, err
 	}
 	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return nil, err
+		return host.Catalog{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("answered %d", res.StatusCode)
+		return host.Catalog{}, fmt.Errorf("answered %d", res.StatusCode)
 	}
 	var c host.Catalog
 	if err := json.NewDecoder(res.Body).Decode(&c); err != nil {
-		return nil, err
+		return host.Catalog{}, err
 	}
-	return c.Skills, nil
+	return c, nil
 }

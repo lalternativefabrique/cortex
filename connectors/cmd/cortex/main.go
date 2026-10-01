@@ -51,11 +51,11 @@ func run() error {
 		_ = shutdownTelemetry(flush)
 	}()
 
-	skills, err := skillsFromFile()
+	shipped, err := skillsFromFile()
 	if err != nil {
 		return err
 	}
-	cfg.Skills = skills
+	cfg.Skills, cfg.AppInstructions = shipped.Skills, shipped.Instructions
 
 	h, err := host.New(ctx, cfg)
 	if err != nil {
@@ -71,10 +71,10 @@ func run() error {
 		_ = srv.Shutdown(shutdown)
 	}()
 	if url := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_URL")); url != "" {
-		h.SetSkillSource(func(ctx context.Context) ([]host.Skill, error) { return fetchSkills(ctx, url) })
-		go loadSkillsFromURL(ctx, url, h.SetSkills)
+		h.SetSkillSource(func(ctx context.Context) (host.Catalog, error) { return fetchSkills(ctx, url) })
+		go loadSkillsFromURL(ctx, url, h.SetCatalog)
 	} else if strings.TrimSpace(os.Getenv("CORTEX_SKILLS_FILE")) != "" {
-		h.SetSkillSource(func(context.Context) ([]host.Skill, error) { return skillsFromFile() })
+		h.SetSkillSource(func(context.Context) (host.Catalog, error) { return skillsFromFile() })
 	}
 	slog.Info("cortex listening", "addr", addr, "agent", cfg.Agent.Name, "skills", len(cfg.Skills), "card", len(h.Card().Skills), "version", version)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
