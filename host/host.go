@@ -87,6 +87,7 @@ type Config struct {
 type Host struct {
 	cfg           Config
 	skillsMu      sync.RWMutex
+	skillSource   func(context.Context) ([]Skill, error)
 	skillList     []Skill
 	skills        map[string]declaredSkill
 	servers       *servers
@@ -126,6 +127,7 @@ func (h *Host) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(h.Card())
 	})
 	mux.HandleFunc("GET /skills", h.serveSkills)
+	mux.Handle("POST /skills/refresh", h.authorized(http.HandlerFunc(h.refreshSkills)))
 	mux.Handle("POST /a2a", h.authorized(h.handler))
 	return mux
 }
@@ -216,7 +218,7 @@ func cortexExtension() a2a.AgentExtension {
 				"tool-call": "one per tool call: the tool, its arguments, its result or error",
 				"step":      "one per model call: its reasoning, the tools it asked for, its tokens and duration",
 			},
-			"skills": "/skills serves every declared skill in full: instructions, input and output JSON Schemas, examples",
+			"skills": "/skills serves every declared skill in full: instructions, input and output JSON Schemas, examples; POST /skills/refresh (same Bearer as /a2a) loads them again from the app",
 		},
 	}
 }

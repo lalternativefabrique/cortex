@@ -2,7 +2,9 @@ package host
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -143,4 +145,46 @@ func (h *Host) declaredSkills() ([]Skill, map[string]declaredSkill) {
 	h.skillsMu.RLock()
 	defer h.skillsMu.RUnlock()
 	return h.skillList, h.skills
+}
+
+// SetSkillSource tells the agent where its app's skills come from, so they
+// can be loaded again on demand (POST /skills/refresh) when the app declares
+// new ones, without restarting the agent.
+func (h *Host) SetSkillSource(source func(context.Context) ([]Skill, error)) {
+	h.skillsMu.Lock()
+	defer h.skillsMu.Unlock()
+	h.skillSource = source
+}
+
+// RefreshSkills loads the skills again from their source and sets them.
+func (h *Host) RefreshSkills(ctx context.Context) (int, error) {
+	h.skillsMu.RLock()
+	source := h.skillSource
+	h.skillsMu.RUnlock()
+	if source == nil {
+		return 0, errNoSkillSource
+	}
+	skills, err := source(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := h.SetSkills(skills); err != nil {
+		return 0, err
+	}
+	return len(skills), nil
+}
+
+var errNoSkillSource = errors.New("this agent loads no skills from its app")
+
+func (h *Host) refreshSkills(w http.ResponseWriter, r *http.Request) {
+	n, err := h.RefreshSkills(r.Context())
+	switch {
+	case errors.Is(err, errNoSkillSource):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadGateway)
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"skills": n})
+	}
 }

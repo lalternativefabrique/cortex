@@ -274,3 +274,41 @@ func TestARunAsksForItsOwnModel(t *testing.T) {
 		t.Errorf("without a model the agent's own is asked for: %s", (*ownBodies)[0])
 	}
 }
+
+func TestSkillsRefreshFromTheirSourceOnDemand(t *testing.T) {
+	provider, _ := model(t, "", "", "x")
+	h, err := host.New(context.Background(), host.Config{Agent: host.Agent{Name: "partage"}, Provider: provider, Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+	refresh := func(token string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/skills/refresh", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := refresh("tok"); res.StatusCode != http.StatusNotFound {
+		t.Errorf("an agent without a source must say so: %d", res.StatusCode)
+	}
+	declared := Catalog(suggestStyle).Skills
+	h.SetSkillSource(func(context.Context) ([]host.Skill, error) { return declared, nil })
+	if res := refresh("nope"); res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a refresh without the agent's Bearer was accepted: %d", res.StatusCode)
+	}
+	res := refresh("tok")
+	var got map[string]int
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	if res.StatusCode != http.StatusOK || got["skills"] != 1 || len(h.Card().Skills) != 1 {
+		t.Fatalf("status %d, %v, card %+v", res.StatusCode, got, h.Card().Skills)
+	}
+	declared = Catalog(suggestStyle, summarize).Skills
+	if res := refresh("tok"); res.StatusCode != http.StatusOK || len(h.Card().Skills) != 2 {
+		t.Errorf("a new skill was not picked up: %d, %+v", res.StatusCode, h.Card().Skills)
+	}
+}
