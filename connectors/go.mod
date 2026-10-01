@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	github.com/a2aproject/a2a-go v0.3.15
+	github.com/google/uuid v1.6.0
 	github.com/lalternative/packages/go/cortex v0.22.0
 	github.com/lalternative/packages/go/search v0.3.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
@@ -34,7 +35,6 @@ require (
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect

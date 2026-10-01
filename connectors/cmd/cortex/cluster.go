@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -71,7 +72,8 @@ func clusterFromEnv(ctx context.Context, cfg *host.Config) (clustered, error) {
 	}
 	cfg.Turns, cfg.History = turns, history
 
-	instance, _ := os.Hostname()
+	hostname, _ := os.Hostname()
+	instance := hostname + "-" + uuid.NewString()[:8]
 	served := make(chan struct{})
 	var refresh *cluster.SkillsRefresh
 	stopRefresh := func() {}
