@@ -62,7 +62,8 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, reqCtx.ContextID)
 	}
 	provider := h.cfg.Provider
-	system := instructions(h.cfg.Agent.Instructions, turnContext)
+	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
+	system := instructions(base, turnContext)
 	schema, hasSchema := outputSchema(reqCtx.Message.Metadata)
 	if name, _ := reqCtx.Message.Metadata[SkillKey].(string); strings.TrimSpace(name) != "" {
 		_, skills := h.declaredSkills()
@@ -74,7 +75,7 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 			return end(a2a.TaskStateFailed, err.Error())
 		}
 		log = log.With("skill", declared.ID)
-		system = instructions(instructions(h.cfg.Agent.Instructions, declared.Instructions), turnContext)
+		system = instructions(instructions(base, declared.Instructions), turnContext)
 		if schema2, ok := declared.outputSchema(); ok {
 			schema, hasSchema = schema2, true
 		}

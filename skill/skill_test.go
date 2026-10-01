@@ -297,7 +297,7 @@ func TestSkillsRefreshFromTheirSourceOnDemand(t *testing.T) {
 		t.Errorf("an agent without a source must say so: %d", res.StatusCode)
 	}
 	declared := Catalog(suggestStyle).Skills
-	h.SetSkillSource(func(context.Context) ([]host.Skill, error) { return declared, nil })
+	h.SetSkillSource(func(context.Context) (host.Catalog, error) { return host.Catalog{Skills: declared}, nil })
 	if res := refresh("nope"); res.StatusCode != http.StatusUnauthorized {
 		t.Errorf("a refresh without the agent's Bearer was accepted: %d", res.StatusCode)
 	}
@@ -360,5 +360,41 @@ func TestTheContextShowsWhatTheAgentRunsWith(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&c)
 	if c.Name != "partage" || c.Instructions != "You are partage's writer." || c.Model != "m" || c.Tools == nil {
 		t.Errorf("context = %+v", c)
+	}
+}
+
+func TestTheAppsInstructionsReachEveryRunAndReloadWithItsSkills(t *testing.T) {
+	provider, bodies := model(t, "respond", `{"category":"devtools","energy":25}`, "")
+	h, err := host.New(context.Background(), host.Config{
+		Agent: host.Agent{Name: "partage", Instructions: "You are partage's writer."}, Provider: provider, Token: "tok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+	doctrine := "Never use an anglicism."
+	h.SetSkillSource(func(context.Context) (host.Catalog, error) { return CatalogWith(doctrine, suggestStyle), nil })
+	if _, err := h.RefreshSkills(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := suggestStyle.Run(context.Background(), client.Agent{URL: srv.URL, Token: "tok"}, styleInput{Brand: "S"}, Call{}); err != nil {
+		t.Fatal(err)
+	}
+	sent := (*bodies)[0]
+	a, b, c := strings.Index(sent, "You are partage's writer."), strings.Index(sent, doctrine), strings.Index(sent, "You suggest a brand voice.")
+	if a < 0 || b < a || c < b {
+		t.Errorf("want the agent's, then the app's, then the skill's instructions, in that order: %s", sent)
+	}
+	if h.Context().AppInstructions != doctrine {
+		t.Errorf("context = %+v", h.Context())
+	}
+	res, _ := http.Get(srv.URL + "/skills")
+	var got host.Catalog
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	res.Body.Close()
+	if got.Instructions != doctrine || len(got.Skills) != 1 {
+		t.Errorf("/skills = %+v", got)
 	}
 }

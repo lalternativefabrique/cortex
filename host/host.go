@@ -68,6 +68,9 @@ type Config struct {
 	// Skills are the actions the app declared for this agent (skills.json):
 	// listed on the Agent Card and at /skills, run by name.
 	Skills []Skill
+	// AppInstructions are the app's own instructions (skills.json
+	// "instructions"), applied to every run after Agent.Instructions.
+	AppInstructions string
 	// Recall nil keeps no memory; recall_memory is offered only with it.
 	Recall recall.Store
 	// Token is what every caller of /a2a presents as Bearer. Empty refuses
@@ -85,14 +88,15 @@ type Config struct {
 }
 
 type Host struct {
-	cfg           Config
-	skillsMu      sync.RWMutex
-	skillSource   func(context.Context) ([]Skill, error)
-	skillList     []Skill
-	skills        map[string]declaredSkill
-	servers       *servers
-	conversations *conversations
-	handler       http.Handler
+	cfg             Config
+	skillsMu        sync.RWMutex
+	skillSource     func(context.Context) (Catalog, error)
+	appInstructions string
+	skillList       []Skill
+	skills          map[string]declaredSkill
+	servers         *servers
+	conversations   *conversations
+	handler         http.Handler
 }
 
 func New(ctx context.Context, cfg Config) (*Host, error) {
@@ -106,7 +110,7 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
+	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, appInstructions: cfg.AppInstructions, servers: startServers(ctx, cfg.MCP), conversations: newConversations(maxConversations)}
 	h.handler = a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(&executor{host: h}))
 	return h, nil
 }
@@ -220,7 +224,7 @@ func cortexExtension() a2a.AgentExtension {
 				"step":      "one per model call: its reasoning, the tools it asked for, its tokens and duration",
 			},
 			"context": "/context serves the agent's own instructions, default model, tools and MCP servers",
-			"skills":  "/skills serves every declared skill in full: instructions, input and output JSON Schemas, examples; POST /skills/refresh (same Bearer as /a2a) loads them again from the app",
+			"skills":  "/skills serves the app's catalog: its instructions (applied to every run) and every declared skill in full: instructions, input and output JSON Schemas, examples; POST /skills/refresh (same Bearer as /a2a) loads them again from the app",
 		},
 	}
 }
@@ -228,27 +232,29 @@ func cortexExtension() a2a.AgentExtension {
 // AgentContext is what an agent runs with besides its skills: what a
 // console shows so a person sees what the agent is told before any skill.
 type AgentContext struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Instructions string   `json:"instructions"`
-	Model        string   `json:"model"`
-	Tools        []string `json:"tools"`
-	MCPServers   []string `json:"mcp_servers"`
-	Memory       bool     `json:"memory"`
-	Version      string   `json:"version"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Instructions    string   `json:"instructions"`
+	AppInstructions string   `json:"app_instructions"`
+	Model           string   `json:"model"`
+	Tools           []string `json:"tools"`
+	MCPServers      []string `json:"mcp_servers"`
+	Memory          bool     `json:"memory"`
+	Version         string   `json:"version"`
 }
 
 // Context reports the agent's own instructions, model, tools and servers.
 func (h *Host) Context() AgentContext {
 	c := AgentContext{
-		Name:         h.cfg.Agent.Name,
-		Description:  h.cfg.Agent.Description,
-		Instructions: h.cfg.Agent.Instructions,
-		Model:        h.cfg.Provider.Model,
-		Tools:        []string{},
-		MCPServers:   []string{},
-		Memory:       h.cfg.Recall != nil,
-		Version:      h.cfg.Version,
+		Name:            h.cfg.Agent.Name,
+		Description:     h.cfg.Agent.Description,
+		Instructions:    h.cfg.Agent.Instructions,
+		AppInstructions: h.appInstructionsNow(),
+		Model:           h.cfg.Provider.Model,
+		Tools:           []string{},
+		MCPServers:      []string{},
+		Memory:          h.cfg.Recall != nil,
+		Version:         h.cfg.Version,
 	}
 	for _, t := range append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.offered()...) {
 		c.Tools = append(c.Tools, t.Name())

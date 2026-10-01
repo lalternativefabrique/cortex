@@ -127,6 +127,23 @@ func Catalog(skills ...Declared) host.Catalog {
 	return c
 }
 
+// CatalogWith is Catalog plus the app's own instructions, its doctrine
+// applied to every run of its agent.
+func CatalogWith(instructions string, skills ...Declared) host.Catalog {
+	c := Catalog(skills...)
+	c.Instructions = instructions
+	return c
+}
+
+// WriteCatalog writes a catalog as skills.json.
+func WriteCatalog(path string, c host.Catalog) error {
+	raw, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o644)
+}
+
 // WriteFile writes the catalog as skills.json, for go:generate.
 func WriteFile(path string, skills ...Declared) error {
 	raw, err := json.MarshalIndent(Catalog(skills...), "", "  ")

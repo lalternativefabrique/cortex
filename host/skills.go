@@ -30,9 +30,13 @@ type Skill struct {
 	Examples []json.RawMessage `json:"examples,omitempty"`
 }
 
-// Catalog is what an app publishes, skills.json.
+// Catalog is what an app publishes, skills.json: its own instructions,
+// applied to every run of its agent, and its skills.
 type Catalog struct {
-	Skills []Skill `json:"skills"`
+	// Instructions are the app's: its doctrine, applied to every run after
+	// the agent's own instructions and before a skill's.
+	Instructions string  `json:"instructions,omitempty"`
+	Skills       []Skill `json:"skills"`
 }
 
 // declaredSkill is a Skill with its input schema compiled.
@@ -126,8 +130,34 @@ func (d declaredSkill) skill() a2a.AgentSkill {
 
 func (h *Host) serveSkills(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	list, _ := h.declaredSkills()
-	_ = json.NewEncoder(w).Encode(Catalog{Skills: list})
+	_ = json.NewEncoder(w).Encode(h.catalog())
+}
+
+func (h *Host) catalog() Catalog {
+	h.skillsMu.RLock()
+	defer h.skillsMu.RUnlock()
+	return Catalog{Instructions: h.appInstructions, Skills: h.skillList}
+}
+
+// SetCatalog replaces the app's instructions and skills while the agent
+// serves.
+func (h *Host) SetCatalog(c Catalog) error {
+	compiled, err := compileSkills(c.Skills)
+	if err != nil {
+		return err
+	}
+	h.skillsMu.Lock()
+	defer h.skillsMu.Unlock()
+	h.appInstructions = c.Instructions
+	h.skillList = append([]Skill(nil), c.Skills...)
+	h.skills = compiled
+	return nil
+}
+
+func (h *Host) appInstructionsNow() string {
+	h.skillsMu.RLock()
+	defer h.skillsMu.RUnlock()
+	return h.appInstructions
 }
 
 // SetSkills replaces the agent's declared skills while it serves, for an
@@ -150,16 +180,16 @@ func (h *Host) declaredSkills() ([]Skill, map[string]declaredSkill) {
 	return h.skillList, h.skills
 }
 
-// SetSkillSource tells the agent where its app's skills come from, so they
+// SetSkillSource tells the agent where its app's catalog comes from, so it
 // can be loaded again on demand (POST /skills/refresh) when the app declares
-// new ones, without restarting the agent.
-func (h *Host) SetSkillSource(source func(context.Context) ([]Skill, error)) {
+// new skills or changes its instructions, without restarting the agent.
+func (h *Host) SetSkillSource(source func(context.Context) (Catalog, error)) {
 	h.skillsMu.Lock()
 	defer h.skillsMu.Unlock()
 	h.skillSource = source
 }
 
-// RefreshSkills loads the skills again from their source and sets them.
+// RefreshSkills loads the app's catalog again from its source and sets it.
 func (h *Host) RefreshSkills(ctx context.Context) (int, error) {
 	h.skillsMu.RLock()
 	source := h.skillSource
@@ -167,14 +197,14 @@ func (h *Host) RefreshSkills(ctx context.Context) (int, error) {
 	if source == nil {
 		return 0, errNoSkillSource
 	}
-	skills, err := source(ctx)
+	c, err := source(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if err := h.SetSkills(skills); err != nil {
+	if err := h.SetCatalog(c); err != nil {
 		return 0, err
 	}
-	return len(skills), nil
+	return len(c.Skills), nil
 }
 
 var errNoSkillSource = errors.New("this agent loads no skills from its app")
