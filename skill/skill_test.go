@@ -398,3 +398,14 @@ func TestTheAppsInstructionsReachEveryRunAndReloadWithItsSkills(t *testing.T) {
 		t.Errorf("/skills = %+v", got)
 	}
 }
+
+func TestARunAsksForItsReasoningEffort(t *testing.T) {
+	provider, bodies := model(t, "respond", `{"category":"devtools","energy":25}`, "")
+	a, _ := serve(t, provider)
+	if _, _, err := suggestStyle.Run(context.Background(), a, styleInput{Brand: "Synthiz"}, Call{ReasoningEffort: "low", NoMemory: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*bodies)[0], `"reasoning_effort":"low"`) {
+		t.Errorf("the run's effort was not asked for: %s", (*bodies)[0])
+	}
+}

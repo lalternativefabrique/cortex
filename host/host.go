@@ -164,7 +164,7 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("GET /skills", h.serveSkills)
 	mux.HandleFunc("GET /context", h.serveContext)
 	mux.Handle("POST /skills/refresh", h.authorized(http.HandlerFunc(h.refreshSkills)))
-	mux.Handle("POST /a2a", h.authorized(h.handler))
+	mux.Handle("POST /a2a", h.authorized(watchCaller(h.handler)))
 	return mux
 }
 

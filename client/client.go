@@ -46,6 +46,11 @@ type Request struct {
 	Skill string
 	// Model asks for a model for this run in place of the agent's own.
 	Model string
+	// ReasoningEffort asks how much the model thinks on this run: high,
+	// medium, low or none.
+	ReasoningEffort string
+	// NoMemory runs the turn without the agent's memory.
+	NoMemory bool
 }
 
 // ToolCall is one tool the agent called during the turn.
@@ -201,6 +206,12 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 	}
 	if r.Model != "" {
 		meta[host.ModelKey] = r.Model
+	}
+	if r.ReasoningEffort != "" {
+		meta[host.ReasoningEffortKey] = r.ReasoningEffort
+	}
+	if r.NoMemory {
+		meta[host.RecallKey] = false
 	}
 	conversation := r.ConversationID
 	if conversation == "" {

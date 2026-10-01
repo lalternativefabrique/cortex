@@ -35,6 +35,8 @@ func (e *executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 			return err
 		}
 	}
+	ctx, stop := untilCallerLeaves(ctx)
+	defer stop()
 	emit := func(ctx context.Context, ev a2a.Event) error { return queue.Write(ctx, ev) }
 	err := e.host.turns.Dispatch(ctx, turn, emit)
 	if err == nil || ctx.Err() != nil {

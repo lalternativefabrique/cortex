@@ -82,6 +82,10 @@ type Call struct {
 	Context string
 	// Model asks for a model for this run in place of the agent's own.
 	Model string
+	// ReasoningEffort asks how much the model thinks on this run.
+	ReasoningEffort string
+	// NoMemory runs the skill without the agent's memory.
+	NoMemory bool
 }
 
 // Run sends in to the agent as this skill and returns its answer as an Out,
@@ -94,13 +98,15 @@ func (t Skill[In, Out]) Run(ctx context.Context, a client.Agent, in In, c Call) 
 		return out, client.Turn{}, fmt.Errorf("skill %q input: %w", t.declaration.ID, err)
 	}
 	req := client.Request{
-		Text:           string(raw),
-		Context:        c.Context,
-		Subject:        c.Subject,
-		ConversationID: c.ConversationID,
-		MCPHeaders:     c.MCPHeaders,
-		Skill:          t.declaration.ID,
-		Model:          c.Model,
+		Text:            string(raw),
+		Context:         c.Context,
+		Subject:         c.Subject,
+		ConversationID:  c.ConversationID,
+		MCPHeaders:      c.MCPHeaders,
+		Skill:           t.declaration.ID,
+		Model:           c.Model,
+		ReasoningEffort: c.ReasoningEffort,
+		NoMemory:        c.NoMemory,
 	}
 	if isText[Out]() {
 		text, turn, err := client.Say(ctx, a, req)
