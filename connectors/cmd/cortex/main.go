@@ -71,7 +71,10 @@ func run() error {
 		_ = srv.Shutdown(shutdown)
 	}()
 	if url := strings.TrimSpace(os.Getenv("CORTEX_SKILLS_URL")); url != "" {
+		h.SetSkillSource(func(ctx context.Context) ([]host.Skill, error) { return fetchSkills(ctx, url) })
 		go loadSkillsFromURL(ctx, url, h.SetSkills)
+	} else if strings.TrimSpace(os.Getenv("CORTEX_SKILLS_FILE")) != "" {
+		h.SetSkillSource(func(context.Context) ([]host.Skill, error) { return skillsFromFile() })
 	}
 	slog.Info("cortex listening", "addr", addr, "agent", cfg.Agent.Name, "skills", len(cfg.Skills), "card", len(h.Card().Skills), "version", version)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
