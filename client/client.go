@@ -73,10 +73,31 @@ type Step struct {
 	DurationMs        int64    `json:"duration_ms"`
 }
 
+// ModelUsage is what one model consumed during a turn, in tokens.
+// InputTokens excludes the cached ones.
+type ModelUsage struct {
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"input_tokens"`
+	CachedTokens int64  `json:"cached_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+// Usage is what a turn consumed, as lalter's door reports it on the turn's
+// last event: tokens only, never money. Informational: lalter already
+// declares these costs, the app must not declare them again.
+type Usage struct {
+	TurnID  string       `json:"turn_id"`
+	Calls   int          `json:"calls"`
+	ByModel []ModelUsage `json:"by_model"`
+}
+
 // Turn is what a turn produced besides its answer.
 type Turn struct {
 	ToolCalls []ToolCall
 	Steps     []Step
+	// Usage is nil when the agent was reached without lalter's door.
+	Usage *Usage
 }
 
 // Ask runs a turn whose answer must be a T: the schema of T is sent with
@@ -95,7 +116,7 @@ func Ask[T any](ctx context.Context, a Agent, r Request) (T, Turn, error) {
 	}
 	task, err := send(ctx, a, r, decoded)
 	if err != nil {
-		return out, Turn{}, err
+		return out, task.turn(), err
 	}
 	data, ok := task.data()
 	if !ok {
@@ -111,7 +132,7 @@ func Ask[T any](ctx context.Context, a Agent, r Request) (T, Turn, error) {
 func Say(ctx context.Context, a Agent, r Request) (string, Turn, error) {
 	task, err := send(ctx, a, r, nil)
 	if err != nil {
-		return "", Turn{}, err
+		return "", task.turn(), err
 	}
 	return task.text(), task.turn(), nil
 }
@@ -135,6 +156,9 @@ type task struct {
 		} `json:"message"`
 	} `json:"status"`
 	Artifacts []artifact `json:"artifacts"`
+	Metadata  struct {
+		Usage *Usage `json:"usage"`
+	} `json:"metadata"`
 }
 
 func (t task) data() (json.RawMessage, bool) {
@@ -164,7 +188,7 @@ func (t task) text() string {
 }
 
 func (t task) turn() Turn {
-	var turn Turn
+	turn := Turn{Usage: t.Metadata.Usage}
 	for _, a := range t.Artifacts {
 		for _, p := range a.Parts {
 			if p.Kind != "data" {
@@ -258,6 +282,9 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 	var frame struct {
 		Error *struct {
 			Message string `json:"message"`
+			Data    struct {
+				Usage *Usage `json:"usage"`
+			} `json:"data"`
 		} `json:"error"`
 		Result task `json:"result"`
 	}
@@ -265,7 +292,9 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 		return task{}, fmt.Errorf("cortex: %w", err)
 	}
 	if frame.Error != nil {
-		return task{}, fmt.Errorf("cortex: %s", frame.Error.Message)
+		var failed task
+		failed.Metadata.Usage = frame.Error.Data.Usage
+		return failed, fmt.Errorf("cortex: %s", frame.Error.Message)
 	}
 	if frame.Result.Status.State != "completed" {
 		why := frame.Result.Status.State
