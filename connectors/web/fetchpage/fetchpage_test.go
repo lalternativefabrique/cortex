@@ -145,6 +145,28 @@ func TestFetchFallsBackWhenTornadCannotRead(t *testing.T) {
 	}
 }
 
+func TestFetchNamesTheSiteWhenBothReadsAreRefused(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer origin.Close()
+
+	tornad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"fetch page: status 401"}`))
+	}))
+	defer tornad.Close()
+
+	_, err := New(Config{BaseURL: tornad.URL}).Fetch(context.Background(), tools.FetchRequest{URL: origin.URL})
+	if err == nil {
+		t.Fatal("Fetch succeeded, want the refusal")
+	}
+	if !strings.Contains(err.Error(), "the site refused") {
+		t.Errorf("error is %q, want it to blame the site rather than read as the reader's own auth failing", err)
+	}
+}
+
 // A tornad that is genuinely down is not a page refusing to be read: the
 // caller hears about it rather than silently getting a degraded answer.
 func TestFetchDoesNotFallBackOnOutage(t *testing.T) {

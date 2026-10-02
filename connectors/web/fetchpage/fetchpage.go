@@ -83,6 +83,7 @@ func (c *Client) Fetch(ctx context.Context, req tools.FetchRequest) (*tools.Page
 	if maxRunes <= 0 {
 		maxRunes = DefaultMaxRunes
 	}
+	var refused error
 	if c.tornad != nil {
 		page, err := c.fetchRemote(ctx, url, maxRunes, req.Render)
 		// ErrUpstream is the page refusing to be read, not tornad failing:
@@ -92,9 +93,13 @@ func (c *Client) Fetch(ctx context.Context, req tools.FetchRequest) (*tools.Page
 		if err == nil || !errors.Is(err, tornad.ErrUpstream) {
 			return page, err
 		}
+		refused = err
 	}
 	page, err := fetch.FetchStatic(ctx, url, maxRunes, c.cache)
 	if err != nil {
+		if refused != nil {
+			return nil, fmt.Errorf("the site refused to serve this page, through the reader and directly (%v; direct read: %w)", refused, err)
+		}
 		return nil, err
 	}
 	return &Page{Title: page.Title, Text: page.Text}, nil
