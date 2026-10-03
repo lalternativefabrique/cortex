@@ -99,7 +99,8 @@ func TestAReasoningEffortComesFromTheRunThenTheAgentThenTheModel(t *testing.T) {
 	}{
 		{map[string]any{ReasoningEffortKey: "low"}, agent.Provider{ReasoningEffort: "high", Model: "deepseek-v4"}, "low"},
 		{nil, agent.Provider{ReasoningEffort: "medium", Model: "deepseek-v4"}, "medium"},
-		{nil, agent.Provider{Model: "deepseek-v4-flash"}, agent.ReasoningEffortNone},
+		{nil, agent.Provider{Model: "deepseek-v4-flash"}, ""},
+		{nil, agent.Provider{Model: "qwen3.5-397b"}, agent.ReasoningEffortNone},
 		{nil, agent.Provider{Model: "mistral-medium"}, ""},
 	}
 	for _, c := range cases {

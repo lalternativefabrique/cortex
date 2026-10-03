@@ -113,8 +113,9 @@ type wireRequest struct {
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	// ReasoningEffort is ignored by servers that do not serve reasoning
 	// models, so it is safe to send wherever the operator asked for it.
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	Stream          bool   `json:"stream"`
+	ReasoningEffort    string         `json:"reasoning_effort,omitempty"`
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
+	Stream             bool           `json:"stream"`
 	// StreamOptions asks the server to include a final usage chunk, which
 	// most OpenAI-compatible servers omit from a stream otherwise.
 	StreamOptions *wireStreamOptions `json:"stream_options,omitempty"`
@@ -272,15 +273,16 @@ func (c *httpClient) buildPayload(req CompletionRequest) (wireRequest, error) {
 		})
 	}
 
-	return wireRequest{
-		Model:           c.provider.Model,
-		Messages:        msgs,
-		Tools:           tools,
-		Temperature:     c.provider.Temperature,
-		MaxTokens:       c.provider.MaxTokens,
-		ReasoningEffort: wireReasoningEffort(c.provider.ReasoningEffort),
-		Stream:          false,
-	}, nil
+	out := wireRequest{
+		Model:       c.provider.Model,
+		Messages:    msgs,
+		Tools:       tools,
+		Temperature: c.provider.Temperature,
+		MaxTokens:   c.provider.MaxTokens,
+		Stream:      false,
+	}
+	reasonerFor(c.provider.Model).Apply(c.provider.ReasoningEffort, &out)
+	return out, nil
 }
 
 func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, error) {
@@ -345,20 +347,6 @@ func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, e
 		})
 	}
 	return out, nil
-}
-
-// wireReasoningEffort maps an effort onto what goes on the wire.
-//
-// "none" is not a value every server takes: vLLM validates the field against
-// low, medium and high and rejects the request outright. Asking for no
-// reasoning is expressed by not asking for any, which every server
-// understands as leaving its own default alone — and for a model that does
-// not reason, that default is not to.
-func wireReasoningEffort(effort string) string {
-	if effort == ReasoningEffortNone {
-		return ""
-	}
-	return effort
 }
 
 // transportError marks a network-level failure, always retryable.
