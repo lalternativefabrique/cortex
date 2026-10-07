@@ -6,7 +6,7 @@ require (
 	github.com/a2aproject/a2a-go v0.3.15
 	github.com/google/uuid v1.6.0
 	github.com/lalternative/packages/go/cortex v0.25.0
-	github.com/lalternative/packages/go/search v0.3.0
+	github.com/lalternative/packages/go/search v0.9.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
 	github.com/lalternative/packages/tornad/sdk-go v0.2.0
@@ -17,6 +17,8 @@ require (
 
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.1 // indirect
+	github.com/JohannesKaufmann/dom v0.3.1 // indirect
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op // indirect
@@ -39,6 +41,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/lalternative/packages/go/authz v0.1.0 // indirect
+	github.com/lalternative/packages/go/fileguard v0.5.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect

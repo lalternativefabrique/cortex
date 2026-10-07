@@ -38,6 +38,8 @@ const (
 	fetchTimeout = 45 * time.Second
 )
 
+var errNoReader = errors.New("fetchpage: no reader configured and local extraction is disabled")
+
 // Page is the kernel's page.
 type Page = tools.Page
 
@@ -48,8 +50,13 @@ type Config struct {
 	// Key authenticates server-to-server calls on a tornad reachable from the
 	// internet. Empty sends nothing, which an internal-only tornad accepts.
 	Key string
-	// HTTPClient defaults to one bounded by fetchTimeout.
+	// HTTPClient reaches tornad and defaults to one bounded by fetchTimeout.
+	// The local extraction does not use it: it runs on go/search's guarded
+	// client, which refuses internal addresses on every hop.
 	HTTPClient *http.Client
+	// NoLocalFallback refuses to read a page here when tornad is not
+	// configured or the site refused it, rather than extracting it locally.
+	NoLocalFallback bool
 }
 
 // Client reads pages, through vvaves when one is configured.
@@ -94,6 +101,12 @@ func (c *Client) Fetch(ctx context.Context, req tools.FetchRequest) (*tools.Page
 			return page, err
 		}
 		refused = err
+	}
+	if c.cfg.NoLocalFallback {
+		if refused != nil {
+			return nil, fmt.Errorf("the site refused to serve this page through the reader: %w", refused)
+		}
+		return nil, errNoReader
 	}
 	page, err := fetch.FetchStatic(ctx, url, maxRunes, c.cache)
 	if err != nil {
