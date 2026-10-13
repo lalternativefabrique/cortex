@@ -124,6 +124,15 @@ type Result struct {
 	// Truncated reports that the loop stopped on the step budget rather than
 	// on a final answer from the model.
 	Truncated bool
+	// Exhausted reports that the loop stopped on the input-token budget,
+	// Config.MaxInputTokens, with what the model said on that step.
+	Exhausted bool
+	// Stalled reports that the loop stopped because the model kept repeating
+	// the previous step's calls, Config.StallAfter steps in a row.
+	Stalled bool
+	// Repeats counts steps whose every call repeated the step before, which
+	// were answered with a notice instead of being run.
+	Repeats int
 	// Compactions counts how many times the history was summarised.
 	Compactions int
 	// Recoveries counts turns where the model wrote a tool call as text and

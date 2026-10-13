@@ -15,6 +15,9 @@ import (
 type scriptedReply struct {
 	respond string
 	text    string
+	// usage is what the reply reports as prompt tokens, when the test
+	// drives a token budget.
+	usage int
 }
 
 // scriptedModel answers each request with the next reply: a call to respond
@@ -45,6 +48,9 @@ func scriptedModel(t *testing.T, replies ...scriptedReply) (agent.Provider, *[]s
 			}}}, "finish_reason": "tool_calls"}}})
 		} else {
 			write(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"content": reply.text}, "finish_reason": "stop"}}})
+		}
+		if reply.usage > 0 {
+			write(map[string]any{"choices": []any{}, "usage": map[string]any{"prompt_tokens": reply.usage, "completion_tokens": 1}})
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
@@ -189,4 +195,46 @@ func TestATurnWithoutASchemaStillAnswersInText(t *testing.T) {
 	if strings.Contains((*bodies)[0], `"respond"`) {
 		t.Errorf("respond is offered only when a schema is asked")
 	}
+}
+
+func TestARespondReminderSpendsTheTurnsOwnTokenBudget(t *testing.T) {
+	provider, bodies := scriptedModel(t,
+		scriptedReply{text: "Voici le style.", usage: 900},
+		scriptedReply{text: "Encore du texte.", usage: 200},
+		scriptedReply{respond: `{"category":"devtools","energy":50}`},
+	)
+	srv := start(t, Config{Agent: Agent{Name: "partage"}, Provider: provider, Token: "t", MaxInputTokens: 1000})
+	events := readStream(t, rpc(t, srv.URL, "t", "message/stream", message("suggest a style", "ctx-budget", map[string]any{
+		OutputSchemaKey: styleSchema,
+	})))
+	if finalState(events) != "failed" {
+		t.Fatalf("state = %q, want failed once the budget is spent", finalState(events))
+	}
+	if len(*bodies) != 2 {
+		t.Errorf("model calls = %d, want the first and one reminder: the second reminder has no budget left", len(*bodies))
+	}
+}
+
+func TestASkillBoundsItsOwnRuns(t *testing.T) {
+	provider, bodies := scriptedModel(t,
+		scriptedReply{text: "Voici le style.", usage: 500},
+		scriptedReply{respond: `{"category":"devtools","energy":50}`},
+	)
+	skill := Skill{ID: "style", Name: "style", Output: mustJSON(t, styleSchema), MaxInputTokens: 100}
+	srv := start(t, Config{Agent: Agent{Name: "partage"}, Provider: provider, Token: "t", MaxInputTokens: 100000, Skills: []Skill{skill}})
+	events := readStream(t, rpc(t, srv.URL, "t", "message/stream", message("suggest a style", "ctx-skill-budget", map[string]any{
+		SkillKey: "style",
+	})))
+	if finalState(events) != "failed" || len(*bodies) != 1 {
+		t.Errorf("state %q after %d model calls: the skill's 100-token bound must win over the agent's", finalState(events), len(*bodies))
+	}
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -150,7 +150,7 @@ func TestRunStopsAtMaxStepsAndReportsTruncation(t *testing.T) {
 	tool := &fakeTool{name: "probe", result: "again"}
 	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
 	client := &scriptedClient{responses: []CompletionResponse{looping, looping, looping}}
-	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxSteps: 3})
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxSteps: 3, StallAfter: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,5 +258,97 @@ func TestRunDoesNotMutateCallerMessages(t *testing.T) {
 	}
 	if len(messages) != 1 {
 		t.Fatalf("caller slice grew to %d messages", len(messages))
+	}
+}
+
+func TestRunStopsOnTheInputTokenBudgetWithWhatTheModelSaid(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: "again"}
+	calling := CompletionResponse{
+		Text:      "still looking",
+		ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{"q":1}`)}},
+		Usage:     Usage{Input: 600, Output: 5},
+	}
+	client := &scriptedClient{responses: []CompletionResponse{calling, calling, calling}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxInputTokens: 1000, StallAfter: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted || res.Truncated {
+		t.Fatalf("Exhausted = %v, Truncated = %v, want exhausted only", res.Exhausted, res.Truncated)
+	}
+	if res.Steps != 2 || res.Usage.Input != 1200 {
+		t.Fatalf("Steps = %d, Usage.Input = %d, want 2 steps and 1200 tokens", res.Steps, res.Usage.Input)
+	}
+	if res.Text != "still looking" || tool.invoked != 1 {
+		t.Fatalf("Text = %q, invoked = %d: the step that crossed the budget must not run its tools", res.Text, tool.invoked)
+	}
+}
+
+func TestRunStallsWhenAStepRepeatsThePreviousOne(t *testing.T) {
+	tool := &fakeTool{name: "search", result: "nothing"}
+	same := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "search", Arguments: json.RawMessage(`{"q":"x"}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{same, same, same, same}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Stalled || res.Truncated {
+		t.Fatalf("Stalled = %v, Truncated = %v, want stalled only", res.Stalled, res.Truncated)
+	}
+	if tool.invoked != 1 {
+		t.Fatalf("invoked = %d, want 1: a repeated call is answered with a notice, not run", tool.invoked)
+	}
+	if res.Steps != 3 || res.Repeats != 2 {
+		t.Fatalf("Steps = %d, Repeats = %d, want 3 and 2", res.Steps, res.Repeats)
+	}
+	msgs := client.calls[2].Messages
+	last := msgs[len(msgs)-1]
+	if last.Role != RoleTool || last.Content != repeatedCallNotice {
+		t.Fatalf("the model was not told its call was a repeat: %+v", last)
+	}
+}
+
+func TestRunDoesNotStallWhenCallsAlternate(t *testing.T) {
+	test := &fakeTool{name: "test", result: "FAIL"}
+	edit := &fakeTool{name: "edit", result: "ok"}
+	call := func(name string) CompletionResponse {
+		return CompletionResponse{ToolCalls: []ToolCall{{ID: name, Name: name, Arguments: json.RawMessage(`{}`)}}}
+	}
+	client := &scriptedClient{responses: []CompletionResponse{call("test"), call("edit"), call("test"), call("edit"), call("test"), {Text: "green"}}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{test, edit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stalled || res.Repeats != 0 || test.invoked != 3 || res.Text != "green" {
+		t.Fatalf("Stalled = %v, Repeats = %d, tests run = %d, Text = %q", res.Stalled, res.Repeats, test.invoked, res.Text)
+	}
+}
+
+func TestRunNeverStallsWhenToldNotTo(t *testing.T) {
+	tool := &fakeTool{name: "search", result: "nothing"}
+	same := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "search", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{same, same, same}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxSteps: 3, StallAfter: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stalled || !res.Truncated || tool.invoked != 3 {
+		t.Fatalf("Stalled = %v, Truncated = %v, invoked = %d", res.Stalled, res.Truncated, tool.invoked)
 	}
 }

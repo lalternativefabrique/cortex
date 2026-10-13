@@ -114,11 +114,12 @@ func configFromEnv() (host.Config, string, error) {
 			Model:           envOr("CORTEX_MODEL", "lalter"),
 			ReasoningEffort: strings.TrimSpace(os.Getenv("CORTEX_REASONING_EFFORT")),
 		},
-		Token:         os.Getenv("CORTEX_TOKEN"),
-		PublicURL:     os.Getenv("CORTEX_PUBLIC_URL"),
-		MaxSteps:      envInt("CORTEX_MAX_STEPS"),
-		ContextWindow: envInt("CORTEX_CONTEXT_WINDOW"),
-		Version:       version,
+		Token:          os.Getenv("CORTEX_TOKEN"),
+		PublicURL:      os.Getenv("CORTEX_PUBLIC_URL"),
+		MaxSteps:       envInt("CORTEX_MAX_STEPS"),
+		MaxInputTokens: envInt("CORTEX_MAX_INPUT_TOKENS"),
+		ContextWindow:  envInt("CORTEX_CONTEXT_WINDOW"),
+		Version:        version,
 	}
 	web, err := webToolsFromEnv()
 	if err != nil {

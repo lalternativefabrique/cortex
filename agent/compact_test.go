@@ -185,6 +185,7 @@ func TestRunAccountsForWhatCompactionItselfSpent(t *testing.T) {
 		Client:        client,
 		Tools:         []Tool{tool},
 		MaxSteps:      6,
+		StallAfter:    -1,
 		ContextWindow: 2000,
 		Compactor:     &stubCompactor{},
 	})

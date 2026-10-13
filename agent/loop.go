@@ -53,6 +53,19 @@ type Config struct {
 	// MaxSteps bounds model calls per run. A coding task routinely needs
 	// dozens; zero means DefaultMaxSteps.
 	MaxSteps int
+	// MaxInputTokens bounds what a run sends to the model in all, as the
+	// provider counts it: the history is re-sent on every step, so a run of
+	// n steps costs about n times its window, and this is what bounds the
+	// money where MaxSteps only bounds the time. The run ends, with what the
+	// model last said, on the step that crosses it. Zero leaves it unbounded.
+	MaxInputTokens int
+	// StallAfter is how many consecutive steps may repeat, call for call,
+	// what the step before them already called before the run ends as
+	// Stalled: a model re-running the same tool with the same arguments is
+	// making no progress, and each retry re-sends the whole history. The
+	// first such step is not executed; the model is told its call is a
+	// repeat instead. Zero means DefaultStallAfter; negative never stalls.
+	StallAfter int
 	// ToolTimeout caps a single tool execution. Zero means DefaultToolTimeout.
 	ToolTimeout time.Duration
 	// MaxToolResultBytes caps what a single tool result contributes to the
@@ -105,6 +118,7 @@ type MemoryRecorder interface {
 
 const (
 	DefaultMaxSteps           = 60
+	DefaultStallAfter         = 2
 	DefaultToolTimeout        = 2 * time.Minute
 	DefaultMaxToolResultBytes = 16000
 	DefaultCompactAt          = 0.75
@@ -131,6 +145,9 @@ func NewRunner(cfg Config) (*Runner, error) {
 	}
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = DefaultMaxSteps
+	}
+	if cfg.StallAfter == 0 {
+		cfg.StallAfter = DefaultStallAfter
 	}
 	if cfg.ToolTimeout == 0 {
 		cfg.ToolTimeout = DefaultToolTimeout
@@ -189,6 +206,10 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 		r.cfg.Logger.ErrorContext(ctx, "agent: turn failed", append(attrs, "error", err)...)
 	case res.Truncated:
 		r.cfg.Logger.WarnContext(ctx, "agent: turn truncated", append(attrs, "max_steps", r.cfg.MaxSteps)...)
+	case res.Exhausted:
+		r.cfg.Logger.WarnContext(ctx, "agent: turn exhausted", append(attrs, "max_input_tokens", r.cfg.MaxInputTokens)...)
+	case res.Stalled:
+		r.cfg.Logger.WarnContext(ctx, "agent: turn stalled", append(attrs, "stall_after", r.cfg.StallAfter)...)
 	default:
 		r.cfg.Logger.InfoContext(ctx, "agent: turn ended", attrs...)
 	}
@@ -200,6 +221,8 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	copy(history, messages)
 
 	var result Result
+	var previous calledSet
+	stalled := 0
 	for step := 1; step <= r.cfg.MaxSteps; step++ {
 		result.Steps = step
 		r.cfg.Callback.OnStepStart(step)
@@ -271,6 +294,32 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			return result, nil
 		}
 
+		if r.cfg.MaxInputTokens > 0 && result.Usage.Input >= r.cfg.MaxInputTokens {
+			result.Text = resp.Text
+			result.Exhausted = true
+			return result, nil
+		}
+
+		current := calledSetOf(resp.ToolCalls)
+		if r.cfg.StallAfter > 0 && previous.covers(current) {
+			stalled++
+			result.Repeats++
+			if stalled >= r.cfg.StallAfter {
+				result.Text = resp.Text
+				result.Stalled = true
+				return result, nil
+			}
+			r.cfg.Logger.WarnContext(ctx, "agent: step repeats the previous step's calls", "step", step, "stalled", stalled)
+			for _, tc := range resp.ToolCalls {
+				notice := Message{Role: RoleTool, ToolCallID: tc.ID, Content: repeatedCallNotice}
+				history = append(history, notice)
+				r.record(notice)
+			}
+			continue
+		}
+		stalled = 0
+		previous = current
+
 		results := r.executeAll(ctx, resp.ToolCalls)
 		for i, tc := range resp.ToolCalls {
 			result.ToolCalls = append(result.ToolCalls, results[i].trace)
@@ -286,6 +335,36 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 
 	result.Truncated = true
 	return result, nil
+}
+
+// repeatedCallNotice stands in for the result of a call the model already
+// made, with the same arguments, on the step before. The result it got then
+// is still in the history; running the tool again would only send it twice.
+const repeatedCallNotice = "This is the same call, with the same arguments, as your previous step. Its result has not changed and is above. Use it, or do something else."
+
+// calledSet is what one step asked for, by tool name and arguments.
+type calledSet map[string]struct{}
+
+func calledSetOf(calls []ToolCall) calledSet {
+	s := make(calledSet, len(calls))
+	for _, c := range calls {
+		s[c.Name+string(c.Arguments)] = struct{}{}
+	}
+	return s
+}
+
+// covers reports whether every call in next was already in s: the step
+// asked for nothing it had not asked for the step before.
+func (s calledSet) covers(next calledSet) bool {
+	if len(s) == 0 || len(next) == 0 {
+		return false
+	}
+	for k := range next {
+		if _, ok := s[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 type toolOutcome struct {

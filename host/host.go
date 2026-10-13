@@ -86,9 +86,13 @@ type Config struct {
 	// in place of Token: an identity provider's token, for instance.
 	Verify func(ctx context.Context, bearer string) error
 	// PublicURL is where callers reach this container, for its Agent Card.
-	PublicURL     string
-	MaxSteps      int
-	ContextWindow int
+	PublicURL string
+	// MaxSteps bounds one turn's model calls; MaxInputTokens bounds what one
+	// turn sends to the model in all (agent.Config). A skill may declare
+	// tighter bounds of its own. Zero leaves cortex's defaults.
+	MaxSteps       int
+	MaxInputTokens int
+	ContextWindow  int
 	// Version is what the Agent Card reports.
 	Version string
 	// Turns decides where and when turns run. Nil runs them in this process,

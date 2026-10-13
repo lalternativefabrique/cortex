@@ -26,8 +26,13 @@ type Skill struct {
 	Output       json.RawMessage `json:"output,omitempty"`
 	// Model is the model this skill runs on, chosen by the app for the
 	// task; empty uses the agent's. A run may still ask for another.
-	Model    string            `json:"model,omitempty"`
-	Examples []json.RawMessage `json:"examples,omitempty"`
+	Model string `json:"model,omitempty"`
+	// MaxSteps and MaxInputTokens bound one run of this skill, when the
+	// app knows its task better than the agent's defaults: a synthesis has
+	// no business spending what a coding task does. Zero uses the agent's.
+	MaxSteps       int               `json:"max_steps,omitempty"`
+	MaxInputTokens int               `json:"max_input_tokens,omitempty"`
+	Examples       []json.RawMessage `json:"examples,omitempty"`
 }
 
 // Catalog is what an app publishes, skills.json: its own instructions,

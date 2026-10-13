@@ -79,6 +79,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, turn.ContextID)
 	}
 	provider := h.cfg.Provider
+	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: h.cfg.MaxInputTokens}
 	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
 	system := instructions(base, turnContext)
 	schema, hasSchema := outputSchema(meta)
@@ -99,6 +100,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		if declared.Model != "" {
 			provider.Model = declared.Model
 		}
+		bounds = bounds.tightened(declared.MaxSteps, declared.MaxInputTokens)
 	}
 	if model, _ := meta[ModelKey].(string); strings.TrimSpace(model) != "" {
 		provider.Model = strings.TrimSpace(model)
@@ -125,16 +127,20 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		system = withRespondInstruction(system)
 	}
 	stream := &stream{ctx: ctx, emit: emit, task: turn, memory: memory, answer: a2a.NewArtifactID(), structured: respond != nil}
-	runner, err := agent.NewRunner(agent.Config{
-		Client:        client,
-		Tools:         tools,
-		System:        system,
-		MaxSteps:      h.cfg.MaxSteps,
-		ContextWindow: h.cfg.ContextWindow,
-		Stream:        true,
-		Callback:      stream,
-		Logger:        log,
-	})
+	runnerFor := func(b runBounds) (*agent.Runner, error) {
+		return agent.NewRunner(agent.Config{
+			Client:         client,
+			Tools:          tools,
+			System:         system,
+			MaxSteps:       b.steps,
+			MaxInputTokens: b.inputTokens,
+			ContextWindow:  h.cfg.ContextWindow,
+			Stream:         true,
+			Callback:       stream,
+			Logger:         log,
+		})
+	}
+	runner, err := runnerFor(bounds)
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}
@@ -151,7 +157,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	runWith := mcp.WithHeaders(runCtx, headers)
 	res, err := runner.Run(runWith, history)
 	if respond != nil {
-		return h.endStructured(ctx, end, stream, respond, runner, runWith, conversation, asking, history, res, err)
+		return h.endStructured(ctx, end, stream, respond, runnerFor, bounds, runWith, conversation, asking, history, res, err)
 	}
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
@@ -173,10 +179,13 @@ func (h *Host) remember(ctx context.Context, log *slog.Logger, conversation stri
 
 // endStructured finishes a turn that asked for an output schema: the answer
 // is what respond recorded. A turn that ended in text instead is reminded
-// to call respond, a bounded number of times.
+// to call respond, a bounded number of times, each on the few steps a
+// reminder needs and on what is left of the turn's token budget: a reminder
+// is not a fresh run.
 func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, stream *stream, respond *respondTool,
-	runner *agent.Runner, runCtx context.Context, conversation string, asking agent.Message, history []agent.Message, res agent.Result, err error,
+	runnerFor func(runBounds) (*agent.Runner, error), bounds runBounds, runCtx context.Context, conversation string, asking agent.Message, history []agent.Message, res agent.Result, err error,
 ) error {
+	spent := res.Usage.Input
 	for reminders := 0; ; reminders++ {
 		if answer, ok := respond.recorded(); ok {
 			h.remember(ctx, slog.Default(), conversation, asking, string(answer))
@@ -192,11 +201,56 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 		if reminders == maxRespondReminders {
 			return end(a2a.TaskStateFailed, "the agent did not answer in the required format")
 		}
+		left, ok := bounds.remaining(spent)
+		if !ok {
+			return end(a2a.TaskStateFailed, "the agent did not answer in the required format within its token budget")
+		}
+		runner, err := runnerFor(left)
+		if err != nil {
+			return end(a2a.TaskStateFailed, err.Error())
+		}
 		history = append(history,
 			agent.Message{Role: agent.RoleAssistant, Content: res.Text},
 			agent.Message{Role: agent.RoleUser, Content: respondReminder})
 		res, err = runner.Run(runCtx, history)
+		spent += res.Usage.Input
 	}
+}
+
+// runBounds is what one run may spend: model calls and input tokens. Zero
+// is unbounded, or cortex's default where it has one.
+type runBounds struct {
+	steps       int
+	inputTokens int
+}
+
+// tightened applies a skill's own bounds over the agent's, where it declares
+// them.
+func (b runBounds) tightened(steps, inputTokens int) runBounds {
+	if steps > 0 {
+		b.steps = steps
+	}
+	if inputTokens > 0 {
+		b.inputTokens = inputTokens
+	}
+	return b
+}
+
+// reminderSteps is what a respond reminder may spend in model calls: one to
+// answer, one to correct an answer the schema refused.
+const reminderSteps = 2
+
+// remaining is the bounds of a reminder after spent input tokens, and false
+// once a token budget is used up.
+func (b runBounds) remaining(spent int) (runBounds, bool) {
+	left := runBounds{steps: reminderSteps}
+	if b.inputTokens > 0 {
+		left.inputTokens = b.inputTokens - spent
+		if left.inputTokens <= 0 {
+			return left, false
+		}
+	}
+	return left, true
 }
 
 func (e *executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
