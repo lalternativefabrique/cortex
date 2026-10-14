@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,6 +21,9 @@ type ReadConfig struct {
 	// cannot consume the context in one line. Zero means
 	// DefaultMaxLineBytes.
 	MaxLineBytes int
+	// Approver may refuse a read: a deny rule on a path. Nil reads anything
+	// under Root. A read is never prompted for, so only Deny is honoured.
+	Approver Approver
 	// Tracker records which files were read, so edit can require that a file
 	// was seen before it is changed. Optional.
 	Tracker *ReadTracker
@@ -70,7 +74,7 @@ func (t *readTool) Description() string {
 
 func (t *readTool) InputSchema() any { return readArgs{} }
 
-func (t *readTool) Execute(_ context.Context, raw json.RawMessage) (agent.ToolResult, error) {
+func (t *readTool) Execute(ctx context.Context, raw json.RawMessage) (agent.ToolResult, error) {
 	var args readArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return failure("could not parse arguments: %v", err)
@@ -82,6 +86,17 @@ func (t *readTool) Execute(_ context.Context, raw json.RawMessage) (agent.ToolRe
 	abs, err := resolveWithinRoot(t.cfg.Root, args.Path)
 	if err != nil {
 		return failure("%v", err)
+	}
+	if t.cfg.Approver != nil {
+		d, err := t.cfg.Approver.Approve(ctx, Request{Tool: t.Name(), Action: "read " + relativeToRoot(t.cfg.Root, abs), Scope: "read:" + abs})
+		if d == Deny {
+			reason := "a permission rule forbids reading " + relativeToRoot(t.cfg.Root, abs)
+			var r Refusal
+			if errors.As(err, &r) {
+				reason = string(r)
+			}
+			return failure("refused: %s", reason)
+		}
 	}
 
 	info, err := os.Stat(abs)
