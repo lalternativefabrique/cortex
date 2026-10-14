@@ -30,6 +30,12 @@ type Callback interface {
 }
 
 // NopCallback implements Callback with no-ops.
+// SteerCallback is the optional part of a Callback that hears what the
+// person added to a running turn, so a window can show where it landed.
+type SteerCallback interface {
+	OnSteer(step int, messages []string)
+}
+
 type NopCallback struct{}
 
 func (NopCallback) OnStepStart(int)                                   {}
@@ -98,6 +104,10 @@ type Config struct {
 	// Optional; nil means an extraction is used in-run and then discarded.
 	MemoryRecorder MemoryRecorder
 	Callback       Callback
+	// Steer returns what the person added while the turn was running: each
+	// string is a user message, given to the model before its next step. Nil
+	// means nobody can add to a running turn.
+	Steer func() []string
 	// Logger receives what the run does: model calls, tool calls, compaction
 	// and how the turn ended. It never receives message, argument or result
 	// content, which belongs to the person the agent acts for. Nil means
@@ -244,6 +254,8 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			result.Compactions++
 		}
 
+		history = r.steer(ctx, history, step)
+
 		called := time.Now()
 		resp, err := r.complete(ctx, CompletionRequest{
 			System:   r.cfg.System,
@@ -288,6 +300,12 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 				notice := Message{Role: RoleUser, Content: leakedCallNotice}
 				history = append(history, notice)
 				r.record(notice)
+				continue
+			}
+			// What the person added while this answer was written has not been
+			// read yet: answering it is the rest of the turn.
+			if added := r.pendingSteer(); len(added) > 0 {
+				history = r.appendSteer(history, added, step)
 				continue
 			}
 			result.Text = resp.Text
@@ -335,6 +353,40 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 
 	result.Truncated = true
 	return result, nil
+}
+
+func (r *Runner) pendingSteer() []string {
+	if r.cfg.Steer == nil {
+		return nil
+	}
+	return r.cfg.Steer()
+}
+
+func (r *Runner) steer(ctx context.Context, history []Message, step int) []Message {
+	if added := r.pendingSteer(); len(added) > 0 {
+		r.cfg.Logger.InfoContext(ctx, "agent: steered", "step", step, "messages", len(added))
+		return r.appendSteer(history, added, step)
+	}
+	return history
+}
+
+// appendSteer adds the person's messages after the last step. A tool result
+// must directly follow the call that asked for it, so the messages come
+// after every result of that step, which is where the loop stands.
+func (r *Runner) appendSteer(history []Message, added []string, step int) []Message {
+	for _, text := range added {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		m := Message{Role: RoleUser, Content: text}
+		history = append(history, m)
+		r.record(m)
+	}
+	if cb, ok := r.cfg.Callback.(SteerCallback); ok {
+		cb.OnSteer(step, added)
+	}
+	return history
 }
 
 // repeatedCallNotice stands in for the result of a call the model already

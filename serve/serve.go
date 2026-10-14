@@ -139,6 +139,10 @@ type talk struct {
 	// survives the window that was having it. Nil when sessions could not be
 	// opened, which costs the history and nothing else.
 	store *session.Store
+	// running is set while a turn is answered; pending holds what the person
+	// added to it, until the next step takes it.
+	running bool
+	pending []string
 }
 
 // New builds the server and the tool set it exposes.
@@ -240,6 +244,7 @@ func (s *Server) Listen() (net.Listener, error) {
 func (s *Server) Serve(ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /turn", s.handleTurn)
+	mux.HandleFunc("POST /turn/steer", s.handleSteer)
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /skills", s.handleSkills)
 	mux.HandleFunc("GET /context", s.handleContext)
@@ -508,9 +513,28 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	} else {
 		memRecorder = memStore
 	}
+	var steered []string
+	s.mu.Lock()
+	conv.running, conv.pending = true, nil
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		conv.running, conv.pending = false, nil
+		s.mu.Unlock()
+	}()
+	steer := func() []string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		added := conv.pending
+		conv.pending = nil
+		steered = append(steered, added...)
+		return added
+	}
+
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
 		Tools:    s.tools,
+		Steer:    steer,
 		System:   s.system(req.System),
 		MaxSteps: steps,
 		// Without it the history only grows, and a long conversation ends
@@ -532,6 +556,13 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	for _, text := range steered {
+		added := agent.Message{Role: agent.RoleUser, Content: text}
+		conv.history = append(conv.history, added)
+		if conv.store != nil {
+			_ = conv.store.Append(added)
+		}
+	}
 	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}
 	conv.history = append(conv.history, answered)
 	if conv.store != nil {
@@ -632,6 +663,38 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	}
 	s.talks[id] = opened
 	return id, opened
+}
+
+// SteerRequest adds a message to the turn running in a conversation.
+type SteerRequest struct {
+	Conversation string `json:"conversation"`
+	Message      string `json:"message"`
+}
+
+// handleSteer gives the running turn something the person added while it
+// worked: a precision, a correction. It is read before the agent's next
+// step. With no turn running there is nothing to steer, and the caller sends
+// it as a turn of its own.
+func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
+	var req SteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	text := strings.TrimSpace(req.Message)
+	if text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conv, ok := s.talks[strings.TrimSpace(req.Conversation)]
+	if !ok || !conv.running {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no turn is running in this conversation"})
+		return
+	}
+	conv.pending = append(conv.pending, text)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued for the next step"})
 }
 
 // SessionSummary is an earlier conversation, as a list needs it.
@@ -1037,6 +1100,12 @@ func (s *eventSink) OnCompactStart(usedTokens, thresholdTokens int) {
 
 func (s *eventSink) OnCompactEnd(beforeTokens, afterTokens int) {
 	s.emit(Event{Kind: "compact_end", Step: s.step, Tokens: afterTokens, Before: beforeTokens})
+}
+
+// OnSteer tells the window that what the person added was handed to the
+// model, at which step.
+func (s *eventSink) OnSteer(step int, messages []string) {
+	s.emit(Event{Kind: "steered", Text: strings.Join(messages, "\n")})
 }
 
 func (s *eventSink) OnError(err error) {

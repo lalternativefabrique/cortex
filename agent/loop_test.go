@@ -352,3 +352,53 @@ func TestRunNeverStallsWhenToldNotTo(t *testing.T) {
 		t.Fatalf("Stalled = %v, Truncated = %v, invoked = %d", res.Stalled, res.Truncated, tool.invoked)
 	}
 }
+
+func TestAMessageAddedDuringATurnReachesTheNextStep(t *testing.T) {
+	added := []string{"use the staging database, not prod"}
+	var steered []string
+	client := &scriptedClient{responses: []CompletionResponse{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}}},
+		{Text: "done"},
+	}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{&fakeTool{name: "echo", result: "ok"}}, MaxSteps: 5, Steer: func() []string {
+		out := added
+		added = nil
+		steered = append(steered, out...)
+		return out
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "migrate"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(steered) != 1 {
+		t.Fatalf("steered %v", steered)
+	}
+	first := client.calls[0].Messages
+	if last := first[len(first)-1]; last.Role != RoleUser || last.Content != "use the staging database, not prod" {
+		t.Fatalf("the first step did not see the added message: %+v", last)
+	}
+}
+
+func TestAnAnswerWrittenWhileTheyAddedSomethingIsNotTheEnd(t *testing.T) {
+	calls := 0
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "first answer"}, {Text: "answer with the precision"}}}
+	r, err := NewRunner(Config{Client: client, MaxSteps: 5, Steer: func() []string {
+		calls++
+		if calls == 2 {
+			return []string{"and in French"}
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "explain"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "answer with the precision" || res.Steps != 2 {
+		t.Fatalf("result = %q after %d steps", res.Text, res.Steps)
+	}
+}
