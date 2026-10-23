@@ -51,6 +51,9 @@ func (t *researchTool) Description() string {
 		"Searches, then reads the top results' pages and returns their text. One call where web_search followed by several fetch_url would otherwise be needed — so prefer it whenever the answer has to be founded on what pages actually say, rather than on what a search excerpt hints at.",
 		"",
 		"Use web_search instead when a list of links is what is wanted, or when the excerpts are enough.",
+		"",
+		"Returns a JSON list of pages: ref, title, URL, and the page text as excerpt.",
+		citeWebPages,
 	}, "\n")
 }
 
@@ -86,27 +89,27 @@ func (t *researchTool) Execute(ctx context.Context, raw json.RawMessage) (agent.
 		}, nil
 	}
 
-	var b strings.Builder
+	pages := make([]WebPage, 0, len(results))
 	read := 0
-	for i, r := range results {
-		fmt.Fprintf(&b, "## %d. %s\n%s\n", i+1, firstNonEmpty(r.Title, r.URL), r.URL)
+	for _, r := range results {
+		page := WebPage{Title: firstNonEmpty(r.Title, r.URL), URL: r.URL}
 		text := strings.TrimSpace(firstNonEmpty(r.Markdown, r.Text))
 		switch {
 		case text != "":
 			read++
-			fmt.Fprintf(&b, "\n%s\n", text)
+			page.Excerpt = text
 		case strings.TrimSpace(r.ContentError) != "":
 			// Say why a source is missing rather than letting it look thin:
 			// a page that refused to be read is not a page that said nothing.
-			fmt.Fprintf(&b, "\n(not read: %s)\n", strings.TrimSpace(r.ContentError))
-		case strings.TrimSpace(r.Content) != "":
-			fmt.Fprintf(&b, "\n%s\n", strings.TrimSpace(r.Content))
+			page.Excerpt = "(not read: " + strings.TrimSpace(r.ContentError) + ")"
+		default:
+			page.Excerpt = strings.TrimSpace(r.Content)
 		}
-		b.WriteString("\n")
+		pages = append(pages, page)
 	}
 
 	return agent.ToolResult{
-		Content: strings.TrimRight(b.String(), "\n"),
+		Content: webPagesContent(ctx, pages),
 		Metadata: map[string]any{
 			"ok":      true,
 			"sources": len(results),

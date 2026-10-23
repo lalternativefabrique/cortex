@@ -105,11 +105,13 @@ func (t *webSearchTool) Name() string { return "web_search" }
 
 func (t *webSearchTool) Description() string {
 	return strings.Join([]string{
-		"Search the web and get back a list of results: title, URL, and a short excerpt.",
+		"Search the web and get back a JSON list of pages: ref, title, URL, and a short excerpt.",
 		"",
 		"Use this for anything the workspace does not have the answer to — current events, a library's current API, an error message from a dependency, a fact to check.",
 		"",
 		"Does not fetch or read the pages themselves — only what the search engine's excerpt shows. Open a promising result with fetch_url when the excerpt is too thin to answer from.",
+		"",
+		citeWebPages,
 	}, "\n")
 }
 
@@ -161,10 +163,12 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (agent
 		results = filterByLocality(results, geocoded.Label)
 	}
 
-	var b strings.Builder
-	for i, r := range results {
-		fmt.Fprintf(&b, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Content)
+	pages := make([]WebPage, 0, len(results))
+	for _, r := range results {
+		pages = append(pages, WebPage{Title: r.Title, URL: r.URL, Excerpt: r.Content})
 	}
+	var b strings.Builder
+	b.WriteString(webPagesContent(ctx, pages))
 
 	metadata := map[string]any{"ok": true, "query": args.Query, "results": len(results), "items": results, "local": isLocal}
 	if isLocal {
@@ -192,7 +196,7 @@ func (t *webSearchTool) Execute(ctx context.Context, raw json.RawMessage) (agent
 	}
 
 	if mapShown {
-		b.WriteString("A map with these places is already shown to the user above your reply — do not restate the list. Give a one-sentence summary and, if useful, a recommendation, then ask what they'd like to know more about.")
+		b.WriteString("\n\nA map with these places is already shown to the user above your reply — do not restate the list. Give a one-sentence summary and, if useful, a recommendation, then ask what they'd like to know more about.")
 	}
 
 	return agent.ToolResult{

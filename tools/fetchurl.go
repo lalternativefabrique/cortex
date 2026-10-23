@@ -57,6 +57,9 @@ func (t *fetchURLTool) Description() string {
 		"Call this on a URL returned by web_search to read past its short excerpt — the excerpt is often too short to found an answer on.",
 		"",
 		"Does not execute JavaScript: a page whose content is rendered client-side may come back empty.",
+		"",
+		"Returns the page as a one-element JSON list: ref, title, URL, and its text as excerpt. A page web_search already returned keeps its ref.",
+		citeWebPages,
 	}, "\n")
 }
 
@@ -97,7 +100,7 @@ func (t *fetchURLTool) Execute(ctx context.Context, raw json.RawMessage) (agent.
 	}
 
 	return agent.ToolResult{
-		Content:  page.Title + "\n\n" + page.Text,
+		Content:  webPagesContent(ctx, []WebPage{{Title: page.Title, URL: url, Excerpt: page.Text}}),
 		Metadata: map[string]any{"ok": true, "title": page.Title, "chars": len(page.Text)},
 	}, nil
 }

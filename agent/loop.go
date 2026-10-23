@@ -204,6 +204,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 // Messages carries the conversation so far and is not mutated; the returned
 // Result reports what the run produced.
 func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
+	ctx = withWebRefs(ctx)
 	started := time.Now()
 	r.cfg.Logger.InfoContext(ctx, "agent: turn started", "history_messages", len(messages), "tools", len(r.tools))
 	res, err := r.run(ctx, messages)
