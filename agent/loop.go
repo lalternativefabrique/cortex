@@ -72,6 +72,11 @@ type Config struct {
 	// first such step is not executed; the model is told its call is a
 	// repeat instead. Zero means DefaultStallAfter; negative never stalls.
 	StallAfter int
+	// CloseOnBound ends a run cut on MaxSteps, MaxInputTokens or StallAfter
+	// with one more model call, without tools, so it answers from what it
+	// gathered instead of ending on a tool call that shows the person
+	// nothing. The host that already closes such runs itself leaves it off.
+	CloseOnBound bool
 	// ToolTimeout caps a single tool execution. Zero means DefaultToolTimeout.
 	ToolTimeout time.Duration
 	// MaxToolResultBytes caps what a single tool result contributes to the
@@ -206,6 +211,7 @@ func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
 		"steps", res.Steps,
 		"tool_calls", len(res.ToolCalls),
 		"compactions", res.Compactions,
+		"closed", res.Closed,
 		"tokens_in", res.Usage.Input,
 		"tokens_out", res.Usage.Output,
 		"tokens_cached", res.Usage.CachedInput,
@@ -315,7 +321,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 		if r.cfg.MaxInputTokens > 0 && result.Usage.Input >= r.cfg.MaxInputTokens {
 			result.Text = resp.Text
 			result.Exhausted = true
-			return result, nil
+			return r.closeBounded(ctx, answerPending(history, resp.ToolCalls), result, boundTokens)
 		}
 
 		current := calledSetOf(resp.ToolCalls)
@@ -325,7 +331,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			if stalled >= r.cfg.StallAfter {
 				result.Text = resp.Text
 				result.Stalled = true
-				return result, nil
+				return r.closeBounded(ctx, answerPending(history, resp.ToolCalls), result, boundRepeated)
 			}
 			r.cfg.Logger.WarnContext(ctx, "agent: step repeats the previous step's calls", "step", step, "stalled", stalled)
 			for _, tc := range resp.ToolCalls {
@@ -352,6 +358,51 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	}
 
 	result.Truncated = true
+	return r.closeBounded(ctx, history, result, boundSteps)
+}
+
+const (
+	boundSteps    = "step budget"
+	boundTokens   = "input token budget"
+	boundRepeated = "repeated tool call"
+)
+
+// closingNotice is what the model reads once its run is cut on a bound.
+const closingNotice = "You have used everything this answer may take (%s). Do not call any tool now. Answer from what is above: give what you established, say plainly what you could not find or finish and why, and suggest what the person could do next (a precision, a narrower question). Answer in their language."
+
+// skippedCallNotice answers a call the run was cut before running: a
+// provider refuses a history where a tool call has no result.
+const skippedCallNotice = "Not run: this answer reached its budget before this call."
+
+func answerPending(history []Message, calls []ToolCall) []Message {
+	out := append([]Message(nil), history...)
+	for _, tc := range calls {
+		out = append(out, Message{Role: RoleTool, ToolCallID: tc.ID, Content: skippedCallNotice})
+	}
+	return out
+}
+
+func (r *Runner) closeBounded(ctx context.Context, history []Message, result Result, bound string) (Result, error) {
+	if !r.cfg.CloseOnBound {
+		return result, nil
+	}
+	notice := Message{Role: RoleUser, Content: fmt.Sprintf(closingNotice, bound)}
+	resp, err := r.complete(ctx, CompletionRequest{
+		System:   r.cfg.System,
+		Messages: append(history, notice),
+	})
+	result.Usage.Add(resp.Usage)
+	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		if err == nil {
+			err = errors.New("the model answered nothing")
+		}
+		r.cfg.Logger.WarnContext(ctx, "agent: closing answer failed", "bound", bound, "error", err)
+		r.cfg.Callback.OnError(fmt.Errorf("closing answer: %w", err))
+		return result, nil
+	}
+	r.record(Message{Role: RoleAssistant, Content: resp.Text})
+	result.Text = resp.Text
+	result.Closed = true
 	return result, nil
 }
 

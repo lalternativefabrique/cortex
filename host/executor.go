@@ -137,6 +137,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 			ContextWindow:  h.cfg.ContextWindow,
 			Stream:         true,
 			Callback:       stream,
+			CloseOnBound:   respond == nil,
 			Logger:         log,
 		})
 	}

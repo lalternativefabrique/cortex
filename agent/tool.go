@@ -130,6 +130,9 @@ type Result struct {
 	// Stalled reports that the loop stopped because the model kept repeating
 	// the previous step's calls, Config.StallAfter steps in a row.
 	Stalled bool
+	// Closed reports that a bounded run's answer came from the closing call
+	// Config.CloseOnBound adds, not from a step of the loop.
+	Closed bool
 	// Repeats counts steps whose every call repeated the step before, which
 	// were answered with a notice instead of being run.
 	Repeats int

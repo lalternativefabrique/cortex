@@ -402,3 +402,95 @@ func TestAnAnswerWrittenWhileTheyAddedSomethingIsNotTheEnd(t *testing.T) {
 		t.Fatalf("result = %q after %d steps", res.Text, res.Steps)
 	}
 }
+
+func TestABoundedRunClosesWithAnAnswerWithoutTools(t *testing.T) {
+	calling := CompletionResponse{
+		ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{"q":1}`)}},
+		Usage:     Usage{Input: 600},
+	}
+	closing := CompletionResponse{Text: "here is what I found", Usage: Usage{Input: 700}}
+	client := &scriptedClient{responses: []CompletionResponse{calling, calling, closing}}
+	tool := &fakeTool{name: "probe", result: "again"}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxInputTokens: 1000, StallAfter: -1, CloseOnBound: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted || !res.Closed || res.Text != "here is what I found" {
+		t.Fatalf("Exhausted = %v, Closed = %v, Text = %q", res.Exhausted, res.Closed, res.Text)
+	}
+	if res.Usage.Input != 1900 {
+		t.Fatalf("Usage.Input = %d, want 1900: the closing call is spent too", res.Usage.Input)
+	}
+	req := client.calls[2]
+	if len(req.Tools) != 0 {
+		t.Fatalf("the closing call offered %d tools", len(req.Tools))
+	}
+	msgs := req.Messages
+	pending := msgs[len(msgs)-2]
+	if pending.Role != RoleTool || pending.ToolCallID != "c" || pending.Content != skippedCallNotice {
+		t.Fatalf("the unrun call has no result before the closing notice: %+v", pending)
+	}
+	if last := msgs[len(msgs)-1]; last.Role != RoleUser || !strings.Contains(last.Content, boundTokens) {
+		t.Fatalf("the closing notice does not name the bound: %+v", last)
+	}
+}
+
+func TestATruncatedRunClosesAfterItsLastResults(t *testing.T) {
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{looping, looping, {Text: "partial answer"}}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{&fakeTool{name: "probe", result: "again"}}, MaxSteps: 2, StallAfter: -1, CloseOnBound: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || !res.Closed || res.Text != "partial answer" {
+		t.Fatalf("Truncated = %v, Closed = %v, Text = %q", res.Truncated, res.Closed, res.Text)
+	}
+	msgs := client.calls[2].Messages
+	if before := msgs[len(msgs)-2]; before.Role != RoleTool || before.Content != "again" {
+		t.Fatalf("the closing call does not follow the last tool result: %+v", before)
+	}
+}
+
+func TestAClosingCallThatFailsKeepsTheBoundedResult(t *testing.T) {
+	calling := CompletionResponse{
+		Text:      "still looking",
+		ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}},
+		Usage:     Usage{Input: 2000},
+	}
+	client := &scriptedClient{responses: []CompletionResponse{calling, {}}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{&fakeTool{name: "probe"}}, MaxInputTokens: 1000, CloseOnBound: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Closed || res.Text != "still looking" {
+		t.Fatalf("Closed = %v, Text = %q, want the step's own words", res.Closed, res.Text)
+	}
+}
+
+func TestABoundedRunDoesNotCloseUnlessAsked(t *testing.T) {
+	calling := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}, Usage: Usage{Input: 2000}}
+	client := &scriptedClient{responses: []CompletionResponse{calling}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{&fakeTool{name: "probe"}}, MaxInputTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Closed || len(client.calls) != 1 {
+		t.Fatalf("Closed = %v, calls = %d, want no closing call", res.Closed, len(client.calls))
+	}
+}
