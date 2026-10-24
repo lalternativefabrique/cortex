@@ -144,4 +144,7 @@ type Result struct {
 	// Figures checks the answer's figures against what the run read, when
 	// Config.SourceTools is set and the run called one of them.
 	Figures FigureCheck
+	// Citations are the web pages the answer rests on, under the same
+	// condition as Figures.
+	Citations []Citation
 }

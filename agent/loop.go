@@ -247,10 +247,13 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	var result Result
 	var previous calledSet
 	stalled := 0
-	var read []string
+	var read []source
 	for _, m := range messages {
-		if m.Role == RoleUser || m.Role == RoleTool {
-			read = append(read, m.Content)
+		switch m.Role {
+		case RoleUser:
+			read = append(read, source{Text: m.Content})
+		case RoleTool:
+			read = append(read, sourcesOf(m.Content)...)
 		}
 	}
 	consulted, figuresRetried := false, false
@@ -340,6 +343,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 					continue
 				}
 				result.Figures = check
+				result.Citations = citations(resp.Text, read, check)
 			}
 			result.Text = resp.Text
 			return result, nil
@@ -381,7 +385,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			}
 			history = append(history, toolMsg)
 			r.record(toolMsg)
-			read = append(read, results[i].content)
+			read = append(read, sourcesOf(results[i].content)...)
 			if slices.Contains(r.cfg.SourceTools, tc.Name) && results[i].trace.Err == "" {
 				consulted = true
 			}
