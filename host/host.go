@@ -19,6 +19,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/agent"
 	"github.com/lalternative/packages/go/cortex/mcp"
 	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternative/packages/go/cortex/tools"
 )
 
 // Metadata keys a caller sets on its A2A message. Only a caller holding the
@@ -104,6 +105,18 @@ type Config struct {
 	// OnSkillsRefreshed is called after POST /skills/refresh reloaded this
 	// instance's skills, so the other instances can reload theirs.
 	OnSkillsRefreshed func(ctx context.Context)
+	// TurnTools adds tools for one turn, decided from who it runs for.
+	TurnTools func(ctx context.Context, turn TurnInfo) ([]agent.Tool, error)
+	// Approver, when set, returns what is asked before each call of the
+	// turn's Tools, TurnTools and MCP tools (as mcp:<server>), such as a
+	// tools.PDPApprover for the turn's subject. Nil gates nothing.
+	Approver func(ctx context.Context, turn TurnInfo) (tools.Approver, error)
+	// Vision reads the images a caller attaches to its message: with it,
+	// describe_image is offered on a turn that carries one.
+	Vision tools.BytesDescriber
+	// SourceTools names the tools whose results the answer's figures are
+	// checked against (agent.Config.SourceTools).
+	SourceTools []string
 }
 
 type Host struct {
@@ -255,10 +268,12 @@ func cortexExtension() a2a.AgentExtension {
 				ReasoningEffortKey: "how much the model thinks on this run: high, medium, low or none",
 				RecallKey:          "false runs without memory: nothing recalled, nothing written",
 			},
+			"files": "file parts of the message are the run's attached files; images are read with describe_image when the agent has vision",
 			"artifacts": map[string]string{
-				"answer":    "the answer: text chunks, or one data part under an output schema",
-				"tool-call": "one per tool call: the tool, its arguments, its result or error",
-				"step":      "one per model call: its reasoning, the tools it asked for, its tokens and duration",
+				"answer":     "the answer: text chunks, or one data part under an output schema",
+				"tool-call":  "one per tool call: the tool, its arguments, its result or error",
+				"step":       "one per model call: its reasoning, the tools it asked for, its tokens and duration",
+				"attachment": "one per file a tool attached to the reply (a drawing, a picture): one file part; the answer shows it as attachment://<artifact id>",
 			},
 			"context": "/context serves the agent's own instructions, default model, tools and MCP servers",
 			"skills":  "/skills serves the app's catalog: its instructions (applied to every run) and every declared skill in full: instructions, input and output JSON Schemas, examples; POST /skills/refresh (same Bearer as /a2a) loads them again from the app",

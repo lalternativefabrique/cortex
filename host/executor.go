@@ -58,8 +58,13 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		return finish(ctx, emit, turn, state, why)
 	}
 
+	files, err := messageFiles(turn.Message)
+	if err != nil {
+		return end(a2a.TaskStateFailed, err.Error())
+	}
+	ctx = withTurnFiles(ctx, files)
 	asked := messageText(turn.Message)
-	if asked == "" {
+	if asked == "" && len(files) == 0 {
 		return end(a2a.TaskStateFailed, "a text message is required")
 	}
 	if turnTokenExpired(TurnToken(ctx), time.Now()) {
@@ -71,7 +76,14 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	log.InfoContext(ctx, "cortex: task working")
 
 	meta := turn.Message.Metadata
-	tools := append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.forTurn()...)
+	skillName, _ := meta[SkillKey].(string)
+	tools, err := h.turnTools(ctx, TurnInfo{
+		TaskID: turn.TaskID, ContextID: turn.ContextID, Subject: subject, Token: TurnToken(ctx),
+		Skill: strings.TrimSpace(skillName), Metadata: meta, Files: files,
+	})
+	if err != nil {
+		return end(a2a.TaskStateFailed, err.Error())
+	}
 	var memory *recall.Recorder
 	if h.cfg.Recall != nil && subject != "" && recallWanted(meta) {
 		scope := recall.Scope{Subject: subject, Agent: h.cfg.Agent.Name}
@@ -83,7 +95,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
 	system := instructions(base, turnContext)
 	schema, hasSchema := outputSchema(meta)
-	if name, _ := meta[SkillKey].(string); strings.TrimSpace(name) != "" {
+	if name := skillName; strings.TrimSpace(name) != "" {
 		_, skills := h.declaredSkills()
 		declared, ok := skills[strings.TrimSpace(name)]
 		if !ok {
@@ -138,6 +150,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 			Stream:         true,
 			Callback:       stream,
 			CloseOnBound:   respond == nil,
+			SourceTools:    h.cfg.SourceTools,
 			Logger:         log,
 		})
 	}
@@ -146,6 +159,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		return end(a2a.TaskStateFailed, err.Error())
 	}
 
+	asked = withFilesNote(asked, files)
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
 	conversation := turn.Conversation()
 	past, err := h.history.Load(ctx, conversation)
@@ -155,7 +169,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	history := append(past, asking)
 	memory.Said(turn.Message.ID, "user", asked)
 
-	runWith := mcp.WithHeaders(runCtx, headers)
+	runWith := withAttacher(mcp.WithHeaders(runCtx, headers), stream)
 	res, err := runner.Run(runWith, history)
 	if respond != nil {
 		return h.endStructured(ctx, end, stream, respond, runnerFor, bounds, runWith, conversation, asking, history, res, err)
