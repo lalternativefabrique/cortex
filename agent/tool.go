@@ -141,4 +141,7 @@ type Result struct {
 	// Recoveries counts turns where the model wrote a tool call as text and
 	// was asked to retry.
 	Recoveries int
+	// Figures checks the answer's figures against what the run read, when
+	// Config.SourceTools is set and the run called one of them.
+	Figures FigureCheck
 }

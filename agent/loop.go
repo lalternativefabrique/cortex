@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -113,6 +114,12 @@ type Config struct {
 	// string is a user message, given to the model before its next step. Nil
 	// means nobody can add to a running turn.
 	Steer func() []string
+	// SourceTools names the tools that read the world for the answer (web
+	// search, page fetches). When a run called one, every figure of its
+	// answer must appear in what the run read or the person said; the model
+	// is asked once to correct the ones that do not, and Result.Figures
+	// reports what remains. Nil checks nothing.
+	SourceTools []string
 	// Logger receives what the run does: model calls, tool calls, compaction
 	// and how the turn ended. It never receives message, argument or result
 	// content, which belongs to the person the agent acts for. Nil means
@@ -240,6 +247,13 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	var result Result
 	var previous calledSet
 	stalled := 0
+	var read []string
+	for _, m := range messages {
+		if m.Role == RoleUser || m.Role == RoleTool {
+			read = append(read, m.Content)
+		}
+	}
+	consulted, figuresRetried := false, false
 	for step := 1; step <= r.cfg.MaxSteps; step++ {
 		result.Steps = step
 		r.cfg.Callback.OnStepStart(step)
@@ -315,6 +329,18 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 				history = r.appendSteer(history, added, step)
 				continue
 			}
+			if consulted {
+				check := checkFigures(resp.Text, read)
+				if len(check.Unsourced) > 0 && !figuresRetried {
+					figuresRetried = true
+					r.cfg.Logger.WarnContext(ctx, "agent: answer has unsourced figures", "step", step, "unsourced", len(check.Unsourced), "checked", check.Checked)
+					notice := Message{Role: RoleUser, Content: unsourcedMessage(check.Unsourced)}
+					history = append(history, notice)
+					r.record(notice)
+					continue
+				}
+				result.Figures = check
+			}
 			result.Text = resp.Text
 			return result, nil
 		}
@@ -355,6 +381,10 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			}
 			history = append(history, toolMsg)
 			r.record(toolMsg)
+			read = append(read, results[i].content)
+			if slices.Contains(r.cfg.SourceTools, tc.Name) && results[i].trace.Err == "" {
+				consulted = true
+			}
 		}
 	}
 
