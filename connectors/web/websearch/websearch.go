@@ -165,6 +165,15 @@ func (c *Client) search(ctx context.Context, q tools.SearchQuery) ([]tools.Searc
 		if err != nil {
 			return nil, fmt.Errorf("websearch: %w", err)
 		}
+		// A time range skips tornad's own index and leaves only the SearXNG
+		// engines that honour it, which from a datacenter IP is often none:
+		// the answer is an empty list, not an error. Older pages beat no page.
+		if len(found.Results) == 0 && req.TimeRange != "" {
+			req.TimeRange = ""
+			if found, err = c.tornad.Search(ctx, req); err != nil {
+				return nil, fmt.Errorf("websearch: %w", err)
+			}
+		}
 		return fromTornad(found.Results), nil
 	}
 

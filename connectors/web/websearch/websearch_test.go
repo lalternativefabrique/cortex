@@ -152,3 +152,49 @@ func TestSearchFallsBackToSearxngWithoutTornade(t *testing.T) {
 		t.Error("SearXNG was never called with no tornade configured")
 	}
 }
+
+func TestSearchRecentRetriesWithoutTimeRangeWhenEmpty(t *testing.T) {
+	var ranges []any
+	tornade := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		ranges = append(ranges, body["time_range"])
+		results := []map[string]any{}
+		if body["time_range"] == nil {
+			results = append(results, map[string]any{"title": "Smic", "url": "https://www.service-public.gouv.fr/particuliers/vosdroits/F2300"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"query": "smic", "results": results})
+	}))
+	defer tornade.Close()
+
+	client, _ := New(Config{TornadURL: tornade.URL})
+	got, err := client.Search(context.Background(), tools.SearchQuery{Query: "smic 2026", MaxResults: 5, Scope: tools.ScopeRecent})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(ranges) != 2 || ranges[0] != "month" || ranges[1] != nil {
+		t.Errorf("time ranges sent = %v, want [month <none>]", ranges)
+	}
+	if len(got) != 1 {
+		t.Errorf("results = %d, want the unranged search's 1", len(got))
+	}
+}
+
+func TestSearchRecentKeepsTimeRangedResults(t *testing.T) {
+	calls := 0
+	tornade := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"query": "x", "results": []map[string]any{{"title": "fresh", "url": "https://example.org/fresh"}}})
+	}))
+	defer tornade.Close()
+
+	client, _ := New(Config{TornadURL: tornade.URL})
+	if _, err := client.Search(context.Background(), tools.SearchQuery{Query: "x", MaxResults: 5, Scope: tools.ScopeRecent}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 when the time-ranged search found something", calls)
+	}
+}
