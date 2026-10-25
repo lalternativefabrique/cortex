@@ -128,9 +128,10 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 	history := append([]agent.Message(nil), conv.history...)
 	e.mu.Unlock()
 
+	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
-		Tools:         e.tools,
+		Tools:         e.turnTools(client, researched),
 		System:        e.system(""),
 		MaxSteps:      e.cfg.MaxSteps,
 		ContextWindow: e.cfg.ContextWindow,
@@ -143,6 +144,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 	if err != nil {
 		return agent.Result{}, err
 	}
+	res.Usage.Add(researched.total())
 
 	e.mu.Lock()
 	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}

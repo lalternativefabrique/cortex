@@ -531,9 +531,10 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return added
 	}
 
+	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
-		Tools:    s.tools,
+		Tools:    s.turnTools(client, researched),
 		Steer:    steer,
 		System:   s.system(req.System),
 		MaxSteps: steps,
@@ -555,6 +556,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		emit(Event{Kind: "error", Err: err.Error()})
 		return
 	}
+	res.Usage.Add(researched.total())
 	s.mu.Lock()
 	for _, text := range steered {
 		added := agent.Message{Role: agent.RoleUser, Content: text}
