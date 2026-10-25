@@ -87,3 +87,47 @@ func TestDeepResearchNeedsAQuestionAndAResearcher(t *testing.T) {
 		t.Fatalf("no tools to read the web with is refused, got %q", res.Content)
 	}
 }
+
+type refPageTool struct{}
+
+func (refPageTool) Name() string        { return "fetch_url" }
+func (refPageTool) Description() string { return "reads a page" }
+func (refPageTool) InputSchema() any    { return struct{}{} }
+func (refPageTool) Execute(context.Context, json.RawMessage) (agent.ToolResult, error) {
+	return agent.ToolResult{Content: `[{"ref":"W1","title":"Lyon weather","url":"https://meteo.test/lyon","excerpt":"12 mm"}]`}, nil
+}
+
+func TestAReportWithoutRefsIsAskedOnceToCite(t *testing.T) {
+	client := &researcherClient{replies: []agent.CompletionResponse{
+		{ToolCalls: []agent.ToolCall{{ID: "c1", Name: "fetch_url", Arguments: json.RawMessage(`{}`)}}},
+		{Text: "Lyon had 12 mm of rain."},
+		{Text: "Lyon had 12 mm of rain [W1]."},
+	}}
+	tool := NewDeepResearch(DeepResearchConfig{Client: client, Tools: []agent.Tool{refPageTool{}}})
+
+	res := runToolOK(t, tool, `{"question":"Rain in Lyon?"}`)
+
+	if res.Content != "Lyon had 12 mm of rain [W1]." {
+		t.Fatalf("the cited rewrite replaces the bare report, got %q", res.Content)
+	}
+	ask := client.requests[2]
+	last := ask.Messages[len(ask.Messages)-1].Content
+	if !strings.Contains(last, "W1: Lyon weather https://meteo.test/lyon") {
+		t.Fatalf("the researcher is reminded of the pages it read, got %q", last)
+	}
+	if len(ask.Tools) != 0 {
+		t.Fatal("the rewrite cites what was read, it does not search again")
+	}
+}
+
+func TestACitedReportIsKeptAsItIs(t *testing.T) {
+	client := &researcherClient{replies: []agent.CompletionResponse{
+		{ToolCalls: []agent.ToolCall{{ID: "c1", Name: "fetch_url", Arguments: json.RawMessage(`{}`)}}},
+		{Text: "Lyon had 12 mm of rain [W1]."},
+	}}
+	tool := NewDeepResearch(DeepResearchConfig{Client: client, Tools: []agent.Tool{refPageTool{}}})
+	runToolOK(t, tool, `{"question":"Rain in Lyon?"}`)
+	if len(client.requests) != 2 {
+		t.Fatalf("a cited report needs no rewrite, the model was called %d times", len(client.requests))
+	}
+}

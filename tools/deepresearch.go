@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/lalternative/packages/go/cortex/agent"
@@ -80,7 +82,7 @@ func (t *deepResearchTool) Description() string {
 		"",
 		"It takes minutes and many times the tokens of a search. Use it only when the person asks for a thorough answer, a comparison, a state of the art or a report, or when one research call would clearly not cover the question. For a fact, a definition or a quick check, use research or web_search.",
 		"",
-		"Answer from the report: keep its refs as they are, and say what it left uncertain.",
+		"Give the person the report itself, its refs included as they are: do not rewrite it from memory, and do not add what it does not say.",
 	}, "\n")
 }
 
@@ -126,6 +128,15 @@ func (t *deepResearchTool) Execute(ctx context.Context, raw json.RawMessage) (ag
 	if report == "" {
 		return failure("the research ended without a report")
 	}
+	if read := pagesRead(res.ToolCalls); len(read) > 0 && !citedRef.MatchString(report) {
+		cited, usage, err := t.cite(ctx, question, report, read)
+		if t.cfg.OnUsage != nil {
+			t.cfg.OnUsage(usage)
+		}
+		if err == nil && citedRef.MatchString(cited) {
+			report = cited
+		}
+	}
 	return agent.ToolResult{
 		Content: report,
 		Metadata: map[string]any{
@@ -135,4 +146,45 @@ func (t *deepResearchTool) Execute(ctx context.Context, raw json.RawMessage) (ag
 			"bounded":    res.Truncated || res.Exhausted || res.Stalled,
 		},
 	}, nil
+}
+
+var (
+	citedRef = regexp.MustCompile(`\[W\d+\]`)
+	pageRef  = regexp.MustCompile(`"ref":"(W\d+)","title":"((?:[^"\\]|\\.)*)","url":"((?:[^"\\]|\\.)*)"`)
+)
+
+type readPage struct{ ref, title, url string }
+
+func pagesRead(calls []agent.ToolCallTrace) []readPage {
+	seen := map[string]bool{}
+	var out []readPage
+	for _, c := range calls {
+		for _, m := range pageRef.FindAllStringSubmatch(c.Result, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				out = append(out, readPage{ref: m[1], title: m[2], url: m[3]})
+			}
+		}
+	}
+	return out
+}
+
+// cite asks the researcher once, without tools, to found its report on the
+// pages it read: a report without refs cannot be checked by the person.
+func (t *deepResearchTool) cite(ctx context.Context, question, report string, read []readPage) (string, agent.Usage, error) {
+	var b strings.Builder
+	b.WriteString("Your report cites no page. Rewrite it so that every claim carries the ref of the page that supports it, in brackets, as [W1]. Remove every claim no page below supports. Pages you read:\n")
+	for _, p := range read {
+		fmt.Fprintf(&b, "%s: %s %s\n", p.ref, p.title, p.url)
+	}
+	runner, err := agent.NewRunner(agent.Config{Client: t.cfg.Client, System: DeepResearchMethod, MaxSteps: 1})
+	if err != nil {
+		return "", agent.Usage{}, err
+	}
+	res, err := runner.Run(ctx, []agent.Message{
+		{Role: agent.RoleUser, Content: question},
+		{Role: agent.RoleAssistant, Content: report},
+		{Role: agent.RoleUser, Content: b.String()},
+	})
+	return strings.TrimSpace(res.Text), res.Usage, err
 }
