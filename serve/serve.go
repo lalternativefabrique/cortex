@@ -29,6 +29,7 @@ import (
 	"github.com/lalternative/packages/go/cortex/mcp"
 	"github.com/lalternative/packages/go/cortex/memory"
 	"github.com/lalternative/packages/go/cortex/promptctx"
+	"github.com/lalternative/packages/go/cortex/recall"
 	"github.com/lalternative/packages/go/cortex/sandbox"
 	"github.com/lalternative/packages/go/cortex/session"
 	"github.com/lalternative/packages/go/cortex/skills"
@@ -49,6 +50,11 @@ type Config struct {
 	// Files is the folder an assistant's read, grep and glob see. Empty means
 	// Root. Its hidden files and folders are never read.
 	Files string
+	// Recall, when set, remembers every turn as it happens: the question,
+	// each tool action, the answer. A turn stopped half-way keeps what it
+	// did. Whose memory it is belongs to the store; the scope it is handed
+	// carries only the conversation.
+	Recall recall.Store
 	// Provider is the model this machine calls. Calling it from here rather
 	// than through the server keeps the repository's contents on this machine:
 	// what leaves is the conversation, not the code.
@@ -429,6 +435,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	if asked == "" && len(req.Messages) > 0 {
 		asked = req.Messages[len(req.Messages)-1].Content
 	}
+	question := asked
 	if asked == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
 		return
@@ -536,15 +543,21 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 
 	sink := &eventSink{emit: emit}
+	if s.cfg.Recall != nil {
+		sink.memory = recall.NewRecorder(r.Context(), s.cfg.Recall, recall.Scope{}, id)
+		sink.memory.Said(uuid.NewString(), "user", question)
+	}
 	// A nil agent.MemoryRecorder means "extract nothing that outlives this
 	// run" — left nil rather than assigned a *memory.Store that failed to
 	// open, which as a non-nil interface holding a nil pointer would not
 	// compare equal to nil at the point loop.go checks it.
 	var memRecorder agent.MemoryRecorder
-	if memStore, err := memory.NewStore(s.cfg.Root); err != nil {
-		slog.Warn("serve: project memory unavailable", "error", err)
-	} else {
-		memRecorder = memStore
+	if !s.assistant() {
+		if memStore, err := memory.NewStore(s.cfg.Root); err != nil {
+			slog.Warn("serve: project memory unavailable", "error", err)
+		} else {
+			memRecorder = memStore
+		}
 	}
 	var steered []string
 	s.mu.Lock()
@@ -590,6 +603,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res.Usage.Add(researched.total())
+	sink.memory.Said(uuid.NewString(), "assistant", res.Text)
 	s.mu.Lock()
 	for _, text := range steered {
 		added := agent.Message{Role: agent.RoleUser, Content: text}
@@ -1104,7 +1118,8 @@ type eventSink struct {
 	step      int
 	toolCalls int
 	agent.NopCallback
-	emit func(Event)
+	emit   func(Event)
+	memory *recall.Recorder
 }
 
 func (s *eventSink) OnTextDelta(text string) {
@@ -1124,6 +1139,7 @@ func (s *eventSink) OnToolStart(name string, args json.RawMessage) {
 }
 
 func (s *eventSink) OnToolEnd(trace agent.ToolCallTrace) {
+	s.memory.OnToolEnd(trace)
 	result := trace.Result
 	if trace.Err != "" {
 		result = trace.Err
