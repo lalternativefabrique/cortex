@@ -40,6 +40,15 @@ type Config struct {
 	// Root is the workspace every tool is confined to. Every path read or
 	// written resolves under it, and nothing outside it exists for the agent.
 	Root string
+	// Instructions, when set, makes this an assistant rather than a coding
+	// agent. They replace the coding agent's prompt and each MCP server's own
+	// instructions follow them; the conversation does not open on the
+	// repository, no skill is read from disk, and the workspace tools are
+	// read, grep and glob over Files plus write under Root — no edit, no bash.
+	Instructions string
+	// Files is the folder an assistant's read, grep and glob see. Empty means
+	// Root. Its hidden files and folders are never read.
+	Files string
 	// Provider is the model this machine calls. Calling it from here rather
 	// than through the server keeps the repository's contents on this machine:
 	// what leaves is the conversation, not the code.
@@ -153,31 +162,23 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Approver == nil {
 		cfg.Approver = tools.AllowAll{}
 	}
-	tracker := tools.NewReadTracker()
-	// A skill that cannot be read is one the window will not offer. That is a
-	// worse start than no skills at all, so a broken directory is not fatal.
-	available, err := skills.Load(cfg.Root)
-	if err != nil {
-		slog.Warn("serve: skills unavailable", "error", err)
-	}
 	srv := &Server{
 		cfg:    cfg,
-		skills: available,
 		talks:  map[string]*talk{},
 		pricer: cfg.Pricer,
-		tools: []agent.Tool{
-			tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
-			tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
-			tools.NewGlob(tools.GlobConfig{Root: cfg.Root}),
-			tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
-			tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
-			tools.NewBash(tools.BashConfig{
-				Root:        cfg.Root,
-				Sandbox:     sandbox.NewDirect(),
-				Approver:    cfg.Approver,
-				Workstation: true,
-			}),
-		},
+	}
+	if srv.assistant() {
+		srv.skills = skills.Set{}
+		srv.tools = assistantTools(cfg)
+	} else {
+		// A skill that cannot be read is one the window will not offer. That is a
+		// worse start than no skills at all, so a broken directory is not fatal.
+		available, err := skills.Load(cfg.Root)
+		if err != nil {
+			slog.Warn("serve: skills unavailable", "error", err)
+		}
+		srv.skills = available
+		srv.tools = codingTools(cfg)
 	}
 	if cfg.Describer != nil {
 		srv.describer = cfg.Describer
@@ -216,6 +217,38 @@ func New(cfg Config) (*Server, error) {
 	}
 	return srv, nil
 }
+
+func codingTools(cfg Config) []agent.Tool {
+	tracker := tools.NewReadTracker()
+	return []agent.Tool{
+		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
+		tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
+		tools.NewGlob(tools.GlobConfig{Root: cfg.Root}),
+		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewBash(tools.BashConfig{
+			Root:        cfg.Root,
+			Sandbox:     sandbox.NewDirect(),
+			Approver:    cfg.Approver,
+			Workstation: true,
+		}),
+	}
+}
+
+func assistantTools(cfg Config) []agent.Tool {
+	files := cfg.Files
+	if strings.TrimSpace(files) == "" {
+		files = cfg.Root
+	}
+	return []agent.Tool{
+		tools.NewRead(tools.ReadConfig{Root: files, Approver: hiddenRefused{root: files, next: cfg.Approver}}),
+		tools.NewGrep(tools.GrepConfig{Root: files}),
+		tools.NewGlob(tools.GlobConfig{Root: files}),
+		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Approver: cfg.Approver}),
+	}
+}
+
+func (s *Server) assistant() bool { return strings.TrimSpace(s.cfg.Instructions) != "" }
 
 // Close shuts down what New started besides the listener — the MCP servers,
 // if any were configured. Serve itself does not call this: the process is
@@ -420,7 +453,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	// the CLI seeds a session. Pasted in front of the first question instead,
 	// it reads as part of it — asked whether it spoke French, the agent went
 	// and oriented itself in the repository first.
-	if len(conv.history) == 0 {
+	if len(conv.history) == 0 && !s.assistant() {
 		// A complete exchange, not a bare user turn: two user messages in a
 		// row is a shape some providers reject outright ("no user query found
 		// in messages"), and the acknowledgement is what makes the state read
@@ -609,6 +642,16 @@ func (s *Server) system(caller string) string {
 	if strings.TrimSpace(caller) != "" {
 		b.WriteString(strings.TrimSpace(caller))
 		b.WriteString("\n\n")
+	}
+	if s.assistant() {
+		b.WriteString(strings.TrimSpace(s.cfg.Instructions))
+		if s.mcpSession != nil {
+			for _, said := range s.mcpSession.Instructions() {
+				b.WriteString("\n\n")
+				b.WriteString(said)
+			}
+		}
+		return strings.TrimSpace(b.String())
 	}
 	// How to work, and then what is being worked on. Without the first the
 	// agent has tools and no idea what is expected of it, and answers a

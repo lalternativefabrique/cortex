@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -99,8 +100,9 @@ type transport interface {
 // Client is a connection to one MCP server, over whichever transport its
 // ServerConfig named.
 type Client struct {
-	cfg cfg
-	t   transport
+	cfg          cfg
+	t            transport
+	instructions string
 }
 
 // cfg is the subset of ServerConfig a Client still needs after connecting —
@@ -145,7 +147,7 @@ func Connect(ctx context.Context, sc ServerConfig) (*Client, error) {
 }
 
 func (c *Client) handshake(ctx context.Context) error {
-	_, err := c.call(ctx, "initialize", map[string]any{
+	raw, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "skode", "version": "0.1.0"},
@@ -153,10 +155,20 @@ func (c *Client) handshake(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("mcp %s: initialize: %w", c.cfg.name, err)
 	}
+	var initialized struct {
+		Instructions string `json:"instructions"`
+	}
+	if json.Unmarshal(raw, &initialized) == nil {
+		c.instructions = strings.TrimSpace(initialized.Instructions)
+	}
 	// The spec requires this notification before any other request; servers
 	// that enforce it reject tools/list without it.
 	return c.notify(ctx, "notifications/initialized", map[string]any{})
 }
+
+// Instructions is what the server said, on initialize, about how its tools
+// are meant to be used. Empty when it said nothing.
+func (c *Client) Instructions() string { return c.instructions }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.cfg.timeout)

@@ -155,3 +155,25 @@ func TestConnect_RejectsNeitherCommandNorURL(t *testing.T) {
 		t.Fatal("want an error when neither Command nor URL is set")
 	}
 }
+
+func TestConnect_KeepsTheServerInstructions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "initialize" {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","instructions":"  Draft before sending.  "}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c, err := Connect(context.Background(), ServerConfig{Name: "lalter", URL: srv.URL})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer c.Close()
+
+	if got := c.Instructions(); got != "Draft before sending." {
+		t.Fatalf("Instructions() = %q", got)
+	}
+}

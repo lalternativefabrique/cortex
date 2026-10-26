@@ -146,3 +146,15 @@ func (s *Session) Servers() []string {
 	}
 	return names
 }
+
+// Instructions gathers what each connected server said about using its tools,
+// in the order they were configured, skipping those that said nothing.
+func (s *Session) Instructions() []string {
+	var said []string
+	for _, c := range s.clients {
+		if c.instructions != "" {
+			said = append(said, c.instructions)
+		}
+	}
+	return said
+}

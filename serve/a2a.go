@@ -114,7 +114,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 	_, conv := e.conversation(TurnRequest{Conversation: contextID})
 
 	e.mu.Lock()
-	if len(conv.history) == 0 {
+	if len(conv.history) == 0 && !e.assistant() {
 		conv.history = append(conv.history,
 			agent.Message{Role: agent.RoleUser, Content: promptctx.Workspace(e.cfg.Root)},
 			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
