@@ -55,6 +55,10 @@ type ServerConfig struct {
 
 	// Timeout caps a single request. Zero means DefaultRequestTimeout.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	// Deferred withholds the server's tools until the model loads them by
+	// name, described to it by Summary.
+	Deferred bool   `yaml:"deferred" json:"deferred"`
+	Summary  string `yaml:"summary" json:"summary"`
 	// Stderr receives a local server's diagnostics. Nil sends them to the
 	// process's own stderr, which suits a CLI; a service handling several
 	// runs at once wants them separated per run. Unused for a remote server.
@@ -109,8 +113,9 @@ type Client struct {
 // kept separate so transport-specific fields (Command, Args, Env, URL) stay
 // out of code that only ever wants the name.
 type cfg struct {
-	name    string
-	timeout time.Duration
+	name     string
+	timeout  time.Duration
+	deferred bool
 }
 
 // Connect reaches the server — spawning it for a local (Command) config,
@@ -138,7 +143,7 @@ func Connect(ctx context.Context, sc ServerConfig) (*Client, error) {
 		return nil, err
 	}
 
-	c := &Client{cfg: cfg{name: sc.Name, timeout: sc.Timeout}, t: t}
+	c := &Client{cfg: cfg{name: sc.Name, timeout: sc.Timeout, deferred: sc.Deferred}, t: t}
 	if err := c.handshake(ctx); err != nil {
 		c.Close()
 		return nil, err

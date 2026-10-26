@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
 	"github.com/lalternative/packages/go/cortex/agent"
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the on-disk list of servers to launch.
@@ -87,7 +87,8 @@ func readConfig(path string) (Config, error) {
 
 // Session holds every connected server for the life of a run.
 type Session struct {
-	clients []*Client
+	clients  []*Client
+	deferred []agent.Toolset
 }
 
 // Start connects to each configured server and collects their tools.
@@ -126,6 +127,12 @@ func Start(ctx context.Context, cfg Config, onError func(error)) (*Session, []ag
 			continue
 		}
 		s.clients = append(s.clients, client)
+		if sc.Deferred {
+			s.deferred = append(s.deferred, agent.Toolset{
+				Name: sc.Name, Summary: sc.Summary, Instructions: client.instructions, Tools: found,
+			})
+			continue
+		}
 		tools = append(tools, found...)
 	}
 	return s, tools, nil
@@ -147,12 +154,16 @@ func (s *Session) Servers() []string {
 	return names
 }
 
+// Deferred lists the servers whose tools wait for load_tools.
+func (s *Session) Deferred() []agent.Toolset { return s.deferred }
+
 // Instructions gathers what each connected server said about using its tools,
-// in the order they were configured, skipping those that said nothing.
+// in the order they were configured, skipping those that said nothing and
+// the deferred ones, whose instructions come with their tools.
 func (s *Session) Instructions() []string {
 	var said []string
 	for _, c := range s.clients {
-		if c.instructions != "" {
+		if c.instructions != "" && !c.cfg.deferred {
 			said = append(said, c.instructions)
 		}
 	}

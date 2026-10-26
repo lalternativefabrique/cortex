@@ -132,6 +132,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
 		Tools:         e.turnTools(client, researched),
+		Deferred:      e.deferredTools(),
 		System:        e.system(""),
 		MaxSteps:      e.cfg.MaxSteps,
 		ContextWindow: e.cfg.ContextWindow,

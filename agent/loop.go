@@ -53,6 +53,9 @@ func (NopCallback) OnError(error)                                     {}
 type Config struct {
 	Client Client
 	Tools  []Tool
+	// Deferred are tool sets offered only once the model loads them through
+	// load_tools; their names must not clash with Tools.
+	Deferred []Toolset
 	// System is the stable prefix. It is sent first on every step and must
 	// not embed volatile values — a timestamp or a git hash in here defeats
 	// the inference server's prefix cache for the whole run.
@@ -155,9 +158,10 @@ const (
 type Runner struct {
 	cfg   Config
 	tools map[string]Tool
-	// toolTokens is the cost of the tool definitions, computed once because
-	// they never change within a run.
-	toolTokens int
+	// toolTokens is the cost of the always-offered tool definitions and
+	// deferredTokens that of each deferred set, computed once.
+	toolTokens     int
+	deferredTokens []int
 }
 
 // NewRunner validates cfg and returns a Runner. Tool names must be unique.
@@ -195,14 +199,32 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if len(cfg.Deferred) > 0 {
+		cfg.Tools = append(slices.Clone(cfg.Tools), loadTools{sets: cfg.Deferred})
+	}
 	tools := make(map[string]Tool, len(cfg.Tools))
-	for _, t := range cfg.Tools {
+	register := func(t Tool) error {
 		if _, dup := tools[t.Name()]; dup {
-			return nil, fmt.Errorf("duplicate tool name %q", t.Name())
+			return fmt.Errorf("duplicate tool name %q", t.Name())
 		}
 		tools[t.Name()] = t
+		return nil
 	}
-	return &Runner{cfg: cfg, tools: tools, toolTokens: EstimateTools(cfg.Tools)}, nil
+	for _, t := range cfg.Tools {
+		if err := register(t); err != nil {
+			return nil, err
+		}
+	}
+	deferredTokens := make([]int, len(cfg.Deferred))
+	for i, s := range cfg.Deferred {
+		for _, t := range s.Tools {
+			if err := register(t); err != nil {
+				return nil, err
+			}
+		}
+		deferredTokens[i] = EstimateTools(s.Tools)
+	}
+	return &Runner{cfg: cfg, tools: tools, toolTokens: EstimateTools(cfg.Tools), deferredTokens: deferredTokens}, nil
 }
 
 // Run drives the loop until the model answers without requesting tools, the
@@ -280,11 +302,12 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 
 		history = r.steer(ctx, history, step)
 
+		offered, _ := r.offered(history)
 		called := time.Now()
 		resp, err := r.complete(ctx, CompletionRequest{
 			System:   r.cfg.System,
 			Messages: history,
-			Tools:    r.cfg.Tools,
+			Tools:    offered,
 		})
 		if err != nil {
 			r.cfg.Callback.OnError(err)
@@ -636,7 +659,8 @@ func (r *Runner) maybeCompact(ctx context.Context, history []Message, step int) 
 	if r.cfg.ContextWindow <= 0 || r.cfg.Compactor == nil {
 		return history, false, Usage{}, nil
 	}
-	used := EstimateMessages(r.cfg.System, history) + r.toolTokens
+	_, toolTokens := r.offered(history)
+	used := EstimateMessages(r.cfg.System, history) + toolTokens
 	fraction := r.cfg.CompactAt
 	if r.cfg.CompactBudget != nil {
 		fraction = r.cfg.CompactBudget(BudgetState{
@@ -662,7 +686,8 @@ func (r *Runner) maybeCompact(ctx context.Context, history []Message, step int) 
 			r.cfg.Callback.OnError(fmt.Errorf("record memory: %w", err))
 		}
 	}
-	after := EstimateMessages(r.cfg.System, compacted) + r.toolTokens
+	_, toolTokens = r.offered(compacted)
+	after := EstimateMessages(r.cfg.System, compacted) + toolTokens
 	r.cfg.Logger.InfoContext(ctx, "agent: history compacted", "step", step, "tokens_before", used, "tokens_after", after, "threshold_tokens", threshold)
 	r.cfg.Callback.OnCompactEnd(used, after)
 	return compacted, true, usage, nil

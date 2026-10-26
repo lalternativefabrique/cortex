@@ -226,6 +226,13 @@ func New(cfg Config) (*Server, error) {
 	return srv, nil
 }
 
+func (s *Server) deferredTools() []agent.Toolset {
+	if s.mcpSession == nil {
+		return nil
+	}
+	return s.mcpSession.Deferred()
+}
+
 func codingTools(cfg Config) []agent.Tool {
 	tracker := tools.NewReadTracker()
 	return []agent.Tool{
@@ -600,6 +607,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
 		Tools:    s.turnTools(client, researched),
+		Deferred: s.deferredTools(),
 		Steer:    steer,
 		System:   s.system(req.System),
 		MaxSteps: steps,
