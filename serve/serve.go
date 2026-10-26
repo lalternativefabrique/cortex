@@ -55,6 +55,8 @@ type Config struct {
 	// did. Whose memory it is belongs to the store; the scope it is handed
 	// carries only the conversation.
 	Recall recall.Store
+	// Journal, when set, is handed each finished turn once, answered or not.
+	Journal Journal
 	// Provider is the model this machine calls. Calling it from here rather
 	// than through the server keeps the repository's contents on this machine:
 	// what leaves is the conversation, not the code.
@@ -455,6 +457,10 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, conv := s.conversation(req)
+	var titleHint string
+	if id != strings.TrimSpace(req.Conversation) {
+		titleHint = firstAsk(req)
+	}
 
 	// What is being worked on opens the conversation as its own turn, the way
 	// the CLI seeds a session. Pasted in front of the first question instead,
@@ -547,6 +553,19 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		sink.memory = recall.NewRecorder(r.Context(), s.cfg.Recall, recall.Scope{}, id)
 		sink.memory.Said(uuid.NewString(), "user", question)
 	}
+	var answer, failure string
+	defer func() {
+		s.journal(r.Context(), JournalEntry{
+			Conversation: id,
+			Turn:         uuid.NewString(),
+			Question:     question,
+			Answer:       answer,
+			TitleHint:    titleHint,
+			ToolCalls:    sink.toolsJournaled(),
+			Err:          failure,
+			At:           time.Now().UTC(),
+		})
+	}()
 	// A nil agent.MemoryRecorder means "extract nothing that outlives this
 	// run" — left nil rather than assigned a *memory.Store that failed to
 	// open, which as a non-nil interface holding a nil pointer would not
@@ -593,15 +612,18 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		Logger:         slog.Default().With("conversation_id", id),
 	})
 	if err != nil {
+		failure = err.Error()
 		emit(Event{Kind: "error", Err: err.Error()})
 		return
 	}
 
 	res, err := runner.Run(r.Context(), conv.history)
 	if err != nil {
+		failure = err.Error()
 		emit(Event{Kind: "error", Err: err.Error()})
 		return
 	}
+	answer = res.Text
 	res.Usage.Add(researched.total())
 	sink.memory.Said(uuid.NewString(), "assistant", res.Text)
 	s.mu.Lock()
@@ -1118,8 +1140,16 @@ type eventSink struct {
 	step      int
 	toolCalls int
 	agent.NopCallback
-	emit   func(Event)
-	memory *recall.Recorder
+	emit      func(Event)
+	memory    *recall.Recorder
+	mu        sync.Mutex
+	journaled []JournalToolCall
+}
+
+func (s *eventSink) toolsJournaled() []JournalToolCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]JournalToolCall(nil), s.journaled...)
 }
 
 func (s *eventSink) OnTextDelta(text string) {
@@ -1134,12 +1164,17 @@ func (s *eventSink) OnStepStart(step int) {
 }
 
 func (s *eventSink) OnToolStart(name string, args json.RawMessage) {
+	s.mu.Lock()
 	s.toolCalls++
+	s.mu.Unlock()
 	s.emit(Event{Kind: "tool_start", Step: s.step, Tool: name, Args: string(args)})
 }
 
 func (s *eventSink) OnToolEnd(trace agent.ToolCallTrace) {
 	s.memory.OnToolEnd(trace)
+	s.mu.Lock()
+	s.journaled = append(s.journaled, journalToolCall(trace))
+	s.mu.Unlock()
 	result := trace.Result
 	if trace.Err != "" {
 		result = trace.Err
