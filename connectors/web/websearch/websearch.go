@@ -10,7 +10,7 @@
 // deployment with neither configured simply omits the tool, the same way
 // vision is omitted without a model.
 //
-// Built on github.com/lalternative/packages/go/search, which also backs
+// Built on github.com/lalternativefabrique/searchkit/search, which also backs
 // Synthiz's own access — the general/academic fusion and RRF scoring are the
 // same code, not a reimplementation.
 package websearch
@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	pkgsearch "github.com/lalternative/packages/go/search"
-	"github.com/lalternative/packages/go/search/searxng"
+	pkgsearch "github.com/lalternativefabrique/searchkit/search"
+	"github.com/lalternativefabrique/searchkit/search/searxng"
 	tornad "github.com/lalternative/packages/tornad/sdk-go"
 )
 

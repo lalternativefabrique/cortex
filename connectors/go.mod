@@ -6,10 +6,10 @@ require (
 	github.com/a2aproject/a2a-go v0.3.15
 	github.com/google/uuid v1.6.0
 	github.com/lalternative/packages/go/cortex v0.30.0
-	github.com/lalternative/packages/go/search v0.9.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
 	github.com/lalternative/packages/tornad/sdk-go v0.2.0
+	github.com/lalternativefabrique/searchkit/search v0.10.0
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.52.0
 	golang.org/x/image v0.46.0
@@ -41,7 +41,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/lalternative/packages/go/authz v0.1.0 // indirect
-	github.com/lalternative/packages/go/fileguard v0.5.0 // indirect
+	github.com/lalternativefabrique/searchkit/fileguard v0.6.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.3.0 // indirect
 	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect

@@ -36,7 +36,7 @@ type Searcher interface {
 }
 
 // Renderer renders a URL's JavaScript and returns the resulting HTML.
-// *rendersvc.Client (github.com/lalternative/packages/go/search/rendersvc)
+// *rendersvc.Client (github.com/lalternativefabrique/searchkit/search/rendersvc)
 // implements it.
 type Renderer interface {
 	Render(ctx context.Context, url string, timeout time.Duration) (html string, err error)

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/lalternative/packages/go/cortex/tools"
-	"github.com/lalternative/packages/go/search/fetch"
+	"github.com/lalternativefabrique/searchkit/search/fetch"
 )
 
 func TestLocalFallbackRefusesInternalAddressByDefault(t *testing.T) {

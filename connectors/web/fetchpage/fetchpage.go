@@ -4,7 +4,7 @@
 // It prefers vvaves's POST /fetch (github.com/lalternativefabrique/vvaves),
 // which owns readability, the JavaScript fallback, the residential proxy and
 // challenge detection in one call. Without a vvaves it extracts locally
-// through github.com/lalternative/packages/go/search/fetch, which is the same
+// through github.com/lalternativefabrique/searchkit/search/fetch, which is the same
 // readability pass minus everything vvaves adds around it.
 package fetchpage
 
@@ -18,7 +18,7 @@ import (
 
 	"github.com/lalternative/packages/go/cortex/tools"
 
-	"github.com/lalternative/packages/go/search/fetch"
+	"github.com/lalternativefabrique/searchkit/search/fetch"
 	tornad "github.com/lalternative/packages/tornad/sdk-go"
 )
 

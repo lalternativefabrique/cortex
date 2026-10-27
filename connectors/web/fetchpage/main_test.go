@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lalternative/packages/go/search/fetch"
+	"github.com/lalternativefabrique/searchkit/search/fetch"
 )
 
 func TestMain(m *testing.M) {
