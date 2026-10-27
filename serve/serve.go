@@ -290,6 +290,15 @@ func (s *Server) Listen() (net.Listener, error) {
 
 // Serve answers requests until the listener is closed.
 func (s *Server) Serve(ln net.Listener) error {
+	return (&http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}).Serve(ln)
+}
+
+// Handler is what Serve answers with, for a host that mounts it beside its
+// own routes.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /turn", s.handleTurn)
 	mux.HandleFunc("POST /turn/steer", s.handleSteer)
@@ -319,10 +328,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	})
 	root.HandleFunc("GET "+cardPath, s.handleCard)
 	root.Handle("/", s.authenticated(mux))
-	return (&http.Server{
-		Handler:           root,
-		ReadHeaderTimeout: 10 * time.Second,
-	}).Serve(ln)
+	return root
 }
 
 // authenticated refuses anything without the token.
