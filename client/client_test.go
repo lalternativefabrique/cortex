@@ -106,3 +106,17 @@ func TestAWrongTokenIsAnError(t *testing.T) {
 		t.Error("a refused call was not an error")
 	}
 }
+
+func TestImagesRideWithTheMessage(t *testing.T) {
+	provider, bodies := model(t, "", "", "Un salon de coiffure.")
+	_, _, err := Say(context.Background(), serve(t, provider), Request{
+		Text:   "what is this shop?",
+		Images: []Image{{Name: "vitrine.jpg", MimeType: "image/jpeg", Data: []byte{0xff, 0xd8, 0xff}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*bodies)[0], "vitrine.jpg (image/jpeg)") {
+		t.Errorf("the model was not told about the image: %s", (*bodies)[0])
+	}
+}

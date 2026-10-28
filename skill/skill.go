@@ -86,6 +86,7 @@ type Call struct {
 	ReasoningEffort string
 	// NoMemory runs the skill without the agent's memory.
 	NoMemory bool
+	Images   []client.Image
 }
 
 // Run sends in to the agent as this skill and returns its answer as an Out,
@@ -107,6 +108,7 @@ func (t Skill[In, Out]) Run(ctx context.Context, a client.Agent, in In, c Call) 
 		Model:           c.Model,
 		ReasoningEffort: c.ReasoningEffort,
 		NoMemory:        c.NoMemory,
+		Images:          c.Images,
 	}
 	if isText[Out]() {
 		text, turn, err := client.Say(ctx, a, req)

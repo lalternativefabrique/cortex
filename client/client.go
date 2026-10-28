@@ -5,6 +5,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,14 @@ type Request struct {
 	ReasoningEffort string
 	// NoMemory runs the turn without the agent's memory.
 	NoMemory bool
+	Images   []Image
+}
+
+// Image rides with the message as a file part; Data is the raw bytes.
+type Image struct {
+	Name     string
+	MimeType string
+	Data     []byte
 }
 
 // ToolCall is one tool the agent called during the turn.
@@ -211,6 +220,16 @@ func (t task) turn() Turn {
 	return turn
 }
 
+func messageParts(r Request) []map[string]any {
+	parts := []map[string]any{{"kind": "text", "text": r.Text}}
+	for _, img := range r.Images {
+		parts = append(parts, map[string]any{"kind": "file", "file": map[string]any{
+			"name": img.Name, "mimeType": img.MimeType, "bytes": base64.StdEncoding.EncodeToString(img.Data),
+		}})
+	}
+	return parts
+}
+
 func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task, error) {
 	meta := map[string]any{}
 	if r.Subject != "" {
@@ -245,7 +264,7 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 		"jsonrpc": "2.0", "id": 1, "method": "message/send",
 		"params": map[string]any{"message": map[string]any{
 			"role": "user", "messageId": uuid.NewString(), "contextId": conversation,
-			"parts":    []map[string]any{{"kind": "text", "text": r.Text}},
+			"parts":    messageParts(r),
 			"metadata": meta,
 		}},
 	})
