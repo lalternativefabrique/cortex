@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lalternative/packages/go/cortex/agent"
 	"github.com/lalternative/packages/go/cortex/mcp"
 )
 
@@ -106,5 +107,15 @@ func TestAnAssistantReadsNoHiddenFile(t *testing.T) {
 	}
 	if got := read("bulletin.txt"); !strings.Contains(got, "salaire") {
 		t.Fatalf("a plain file was not read: %s", got)
+	}
+}
+
+func TestAHostToolIsOffered(t *testing.T) {
+	s, err := New(Config{Root: t.TempDir(), Instructions: "x", Tools: []agent.Tool{newReadAttachment(nil, []Attachment{{Name: "a"}})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !named(s.tools, readAttachmentName) {
+		t.Errorf("tools %v", toolNames(s.tools))
 	}
 }

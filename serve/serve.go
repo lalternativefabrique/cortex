@@ -111,6 +111,8 @@ type Config struct {
 	// Approver gates writes and commands. Nil approves everything, which is
 	// right when the person asking is the person whose machine it is.
 	Approver tools.Approver
+	// Tools are the host's own, offered beside the built-in ones.
+	Tools []agent.Tool
 	// MCP servers to connect and offer alongside the built-in tools. A
 	// server that fails to start is logged and skipped — losing one
 	// capability is smaller than refusing to serve at all. Empty offers
@@ -195,6 +197,7 @@ func New(cfg Config) (*Server, error) {
 			Root: cfg.Root, Describer: cfg.Describer,
 		}))
 	}
+	srv.tools = append(srv.tools, cfg.Tools...)
 	if cfg.Searcher != nil {
 		srv.tools = append(srv.tools, tools.NewWebSearch(tools.WebSearchConfig{
 			Searcher:       cfg.Searcher,
