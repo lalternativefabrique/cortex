@@ -27,9 +27,13 @@ func (r *researchSpend) total() agent.Usage {
 	return r.usage
 }
 
-// turnTools is the server's tools plus, when it reads the web,
-// deep_research over the turn's own client, whose spending lands in spent.
-func (s *Server) turnTools(client agent.Client, spent *researchSpend) []agent.Tool {
+// turnTools is the server's tools plus, for a turn the person asked to
+// research in depth and when it reads the web, deep_research over the turn's
+// own client, whose spending lands in spent.
+func (s *Server) turnTools(client agent.Client, asked bool, spent *researchSpend) []agent.Tool {
+	if !asked {
+		return s.tools
+	}
 	var web []agent.Tool
 	for _, t := range s.tools {
 		if slices.Contains(webTools, t.Name()) {
@@ -46,3 +50,7 @@ func (s *Server) turnTools(client agent.Client, spent *researchSpend) []agent.To
 		OnUsage:       spent.add,
 	}))
 }
+
+// delegatedResearch keeps deep_research for an A2A caller: another agent
+// that delegates a task has no person behind it to turn the switch on.
+const delegatedResearch = true

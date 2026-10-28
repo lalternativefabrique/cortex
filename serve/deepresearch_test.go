@@ -28,12 +28,12 @@ func names(ts []agent.Tool) map[string]bool {
 	return out
 }
 
-func TestAServerThatReadsTheWebOffersDeepResearch(t *testing.T) {
+func TestDeepResearchIsOfferedOnlyWhenThePersonAsks(t *testing.T) {
 	offline, err := New(Config{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names(offline.turnTools(noModel{}, &researchSpend{}))["deep_research"] {
+	if names(offline.turnTools(noModel{}, true, &researchSpend{}))["deep_research"] {
 		t.Fatal("a server without the web has nothing to research with")
 	}
 
@@ -41,9 +41,11 @@ func TestAServerThatReadsTheWebOffersDeepResearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn := online.turnTools(noModel{}, &researchSpend{})
-	if !names(turn)["deep_research"] {
-		t.Fatal("a server that searches the web offers deep_research by default")
+	if names(online.turnTools(noModel{}, false, &researchSpend{}))["deep_research"] {
+		t.Fatal("deep_research was offered on a turn the person did not ask for it")
+	}
+	if !names(online.turnTools(noModel{}, true, &researchSpend{}))["deep_research"] {
+		t.Fatal("the person asked for deep research and it was not offered")
 	}
 	if names(online.tools)["deep_research"] {
 		t.Fatal("deep_research is built per turn, over that turn's client")

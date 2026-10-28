@@ -386,6 +386,9 @@ type TurnRequest struct {
 	Skill    string `json:"skill,omitempty"`
 	System   string `json:"system,omitempty"`
 	MaxSteps int    `json:"max_steps,omitempty"`
+	// DeepResearch is the person's own switch for this turn: only then is
+	// deep_research offered. The agent never starts one on its own.
+	DeepResearch bool `json:"deep_research,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -612,7 +615,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
-		Tools:    s.turnTools(client, researched),
+		Tools:    s.turnTools(client, req.DeepResearch, researched),
 		Deferred: s.deferredTools(),
 		Steer:    steer,
 		System:   s.system(req.System),
