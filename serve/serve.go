@@ -160,6 +160,7 @@ type talk struct {
 	// added to it, until the next step takes it.
 	running bool
 	pending []string
+	files   []Attachment
 }
 
 // New builds the server and the tool set it exposes.
@@ -389,6 +390,9 @@ type TurnRequest struct {
 	// DeepResearch is the person's own switch for this turn: only then is
 	// deep_research offered. The agent never starts one on its own.
 	DeepResearch bool `json:"deep_research,omitempty"`
+	// Files are attached to Message and stay readable for the rest of the
+	// conversation.
+	Files []TurnFile `json:"files,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -454,8 +458,17 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		asked = req.Messages[len(req.Messages)-1].Content
 	}
 	question := asked
+	if asked == "" && len(req.Files) > 0 {
+		asked = "(files attached)"
+		question = asked
+	}
 	if asked == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
+		return
+	}
+	attached, err := decodeTurnFiles(req.Files)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -492,6 +505,13 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
 		)
 	}
+	if note := attachedNote(attached); note != "" {
+		asked = strings.TrimSpace(asked + "\n\n" + note)
+	}
+	s.mu.Lock()
+	conv.files = mergeAttachments(conv.files, attached)
+	files := conv.files
+	s.mu.Unlock()
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
 	conv.history = append(conv.history, asking)
 	if conv.store != nil {
@@ -615,7 +635,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
-		Tools:    s.turnTools(client, req.DeepResearch, researched),
+		Tools:    s.withReadAttachment(s.turnTools(client, req.DeepResearch, researched), files),
 		Deferred: s.deferredTools(),
 		Steer:    steer,
 		System:   s.system(req.System),
@@ -634,7 +654,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := runner.Run(r.Context(), conv.history)
+	res, err := runner.Run(withAttachments(r.Context(), files), conv.history)
 	if err != nil {
 		failure = err.Error()
 		emit(Event{Kind: "error", Err: err.Error()})
