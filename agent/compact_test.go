@@ -83,7 +83,7 @@ func TestSummaryCompactorDropsOrphanToolMessages(t *testing.T) {
 }
 
 func TestSummaryCompactorFailsWhenModelReturnsNothing(t *testing.T) {
-	client := &scriptedClient{responses: []CompletionResponse{{Text: "   "}}}
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "   "}, {Text: ""}}}
 	c := &SummaryCompactor{Client: client, KeepRecent: 2, KeepFirst: 1}
 	if _, _, _, err := c.Compact(context.Background(), "sys", longHistory(10)); err == nil {
 		t.Fatal("an empty summary was accepted, which would silently erase the history")
@@ -203,5 +203,34 @@ func TestRunAccountsForWhatCompactionItselfSpent(t *testing.T) {
 	if res.Usage.Input < wantInput {
 		t.Errorf("usage.Input = %d, want at least %d from %d compaction(s)",
 			res.Usage.Input, wantInput, res.Compactions)
+	}
+}
+
+func TestSummaryCompactorRetriesWithoutToolsWhenModelOnlyRecordsMemory(t *testing.T) {
+	memoryOnly := CompletionResponse{
+		ToolCalls: []ToolCall{{ID: "m", Name: "record_memory", Arguments: json.RawMessage(`{"facts":["the API is on port 4100"]}`)}},
+		Usage:     Usage{Input: 100, Output: 40},
+	}
+	client := &scriptedClient{responses: []CompletionResponse{memoryOnly, {Text: "the summary", Usage: Usage{Input: 100, Output: 10}}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 2, KeepFirst: 1}
+	out, mem, usage, err := c.Compact(context.Background(), "sys", longHistory(10))
+	if err != nil {
+		t.Fatalf("a memory-only answer failed the compaction: %v", err)
+	}
+	if len(client.calls) != 2 || len(client.calls[1].Tools) != 0 {
+		t.Fatalf("want one retry offering no tool, got %d calls", len(client.calls))
+	}
+	if mem == nil {
+		t.Fatal("the memory recorded by the first answer was dropped")
+	}
+	if usage.Output != 50 {
+		t.Fatalf("Usage.Output = %d, want both calls accounted", usage.Output)
+	}
+	var found bool
+	for _, m := range out {
+		found = found || strings.Contains(m.Content, "the summary")
+	}
+	if !found {
+		t.Fatal("the retried summary is missing from the compacted history")
 	}
 }

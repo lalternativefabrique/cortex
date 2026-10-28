@@ -152,21 +152,34 @@ func (c *SummaryCompactor) summarize(ctx context.Context, middle []Message) (str
 		}
 	}
 
-	resp, err := c.Client.Complete(ctx, CompletionRequest{
+	req := CompletionRequest{
 		System: summaryInstruction,
 		Messages: []Message{{
 			Role:    RoleUser,
 			Content: "Transcript to summarise:\n\n" + b.String(),
 		}},
 		Tools: []Tool{memoryExtractionTool{}},
-	})
+	}
+	resp, err := c.Client.Complete(ctx, req)
 	if err != nil {
 		return "", nil, Usage{}, fmt.Errorf("summarise transcript: %w", err)
 	}
+	mem := extractMemory(resp.ToolCalls)
+	usage := resp.Usage
 	if strings.TrimSpace(resp.Text) == "" {
-		return "", nil, resp.Usage, fmt.Errorf("summarise transcript: model returned nothing")
+		// Offered record_memory, a model may answer with the call alone and
+		// stop on tool use; ask again with no tool so it can only write.
+		retry, err := c.Client.Complete(ctx, CompletionRequest{System: summaryInstruction, Messages: req.Messages})
+		if err != nil {
+			return "", nil, usage, fmt.Errorf("summarise transcript: %w", err)
+		}
+		usage.Add(retry.Usage)
+		resp = retry
 	}
-	return resp.Text, extractMemory(resp.ToolCalls), resp.Usage, nil
+	if strings.TrimSpace(resp.Text) == "" {
+		return "", nil, usage, fmt.Errorf("summarise transcript: model returned nothing")
+	}
+	return resp.Text, mem, usage, nil
 }
 
 // extractMemory reads the model's record_memory call, if it made one. The
