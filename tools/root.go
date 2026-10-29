@@ -39,6 +39,10 @@ func resolveWithinRoot(root, rel string) (string, error) {
 	if clean != absRoot && !strings.HasPrefix(clean, absRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q is outside the workspace", rel)
 	}
+	realRoot, real := resolveSymlinks(absRoot), resolveSymlinks(clean)
+	if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q leads outside the workspace through a symbolic link", rel)
+	}
 	return clean, nil
 }
 

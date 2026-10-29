@@ -253,6 +253,9 @@ func (g *GatedApprover) alwaysAsk() []string {
 // Approve decides a request. Tools of one model turn run concurrently, so
 // the reason for a denial travels with the decision.
 func (g *GatedApprover) Approve(ctx context.Context, req Request) (Decision, error) {
+	if g.touchesProtected(req) {
+		return Deny, RefusedProtected
+	}
 	if g.isDenied(req) {
 		return Deny, RefusedByRule
 	}
