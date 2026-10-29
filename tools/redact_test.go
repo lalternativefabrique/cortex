@@ -61,3 +61,20 @@ func TestGrepNeverSearchesSecretFiles(t *testing.T) {
 		t.Fatalf("the fallback search searched a secret file or missed the others: %q", out)
 	}
 }
+
+func TestSecretFilesListsWhatASandboxMustHide(t *testing.T) {
+	root := t.TempDir()
+	writeTemp(t, root, ".env.secret", "A=1\n")
+	writeTemp(t, root, ".env.example", "A=\n")
+	writeTemp(t, root, "apps/core/.env", "B=2\n")
+	writeTemp(t, root, "main.go", "package main\n")
+	got := SecretFiles(root)
+	if len(got) != 2 || !strings.HasSuffix(got[0]+got[1], ".env") && !strings.Contains(strings.Join(got, " "), ".env.secret") {
+		t.Fatalf("SecretFiles = %v, want .env.secret and apps/core/.env", got)
+	}
+	for _, f := range got {
+		if strings.HasSuffix(f, ".env.example") || strings.HasSuffix(f, "main.go") {
+			t.Fatalf("%s is not a secret file", f)
+		}
+	}
+}

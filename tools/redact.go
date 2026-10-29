@@ -153,3 +153,25 @@ func isSkippedDir(name string) bool {
 	}
 	return false
 }
+
+// SecretFiles lists the files under root that hold secrets, for a sandbox
+// to mount empty.
+func SecretFiles(root string) []string {
+	var files []string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root && (isSkippedDir(d.Name()) || strings.Count(strings.TrimPrefix(path, root), string(filepath.Separator)) > 4) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type().IsRegular() && isSecretPath(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files
+}

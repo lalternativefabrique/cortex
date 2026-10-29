@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -108,6 +109,10 @@ type Config struct {
 	// Pricer prices a turn's usage for the window. Nil reports every turn
 	// unpriced, which is not an error.
 	Pricer Pricer
+	// Sandbox runs the shell's commands; nil runs them on this machine with
+	// a stripped environment (sandbox.Direct). Close closes it when it is
+	// an io.Closer, such as a sandbox.Space.
+	Sandbox sandbox.Sandbox
 	// EnvPassthrough names environment variables commands keep beyond
 	// sandbox.DefaultInherit; tokens and keys are dropped otherwise.
 	EnvPassthrough []string
@@ -177,6 +182,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Approver == nil {
 		cfg.Approver = tools.AllowAll{}
+	}
+	if cfg.Sandbox == nil {
+		cfg.Sandbox = &sandbox.Direct{Shell: "/bin/sh", Inherit: sandbox.DefaultInherit, Passthrough: cfg.EnvPassthrough}
 	}
 	srv := &Server{
 		cfg:      cfg,
@@ -253,7 +261,7 @@ func codingTools(cfg Config) []agent.Tool {
 		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewBash(tools.BashConfig{
 			Root:        cfg.Root,
-			Sandbox:     &sandbox.Direct{Shell: "/bin/sh", Inherit: sandbox.DefaultInherit, Passthrough: cfg.EnvPassthrough},
+			Sandbox:     cfg.Sandbox,
 			Approver:    cfg.Approver,
 			Workstation: true,
 		}),
@@ -283,6 +291,9 @@ func (s *Server) assistant() bool { return strings.TrimSpace(s.cfg.Instructions)
 func (s *Server) Close() {
 	if s.mcpSession != nil {
 		s.mcpSession.Close()
+	}
+	if c, ok := s.cfg.Sandbox.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 

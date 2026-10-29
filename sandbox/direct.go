@@ -56,6 +56,12 @@ func (d *Direct) Run(ctx context.Context, c Command) (Output, error) {
 	cmd.Dir = c.Dir
 	cmd.Stdin = c.Stdin
 	cmd.Env = append(d.environ(), c.Env...)
+	return execute(cctx, cmd, c, started)
+}
+
+// execute runs cmd to completion, streaming its output to c.OnLine and
+// killing its whole process group when cctx ends.
+func execute(cctx context.Context, cmd *exec.Cmd, c Command, started time.Time) (Output, error) {
 	// A shell spawns children; killing only the shell leaves them running
 	// and holding the pipes open, so the whole group is signalled instead.
 	setProcessGroup(cmd)
