@@ -233,7 +233,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 // Messages carries the conversation so far and is not mutated; the returned
 // Result reports what the run produced.
 func (r *Runner) Run(ctx context.Context, messages []Message) (Result, error) {
-	ctx = withWebRefs(ctx)
+	ctx = withPersonRequest(withWebRefs(ctx), messages)
 	started := time.Now()
 	r.cfg.Logger.InfoContext(ctx, "agent: turn started", "history_messages", len(messages), "tools", len(r.tools))
 	res, err := r.run(ctx, messages)
@@ -352,7 +352,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			// What the person added while this answer was written has not been
 			// read yet: answering it is the rest of the turn.
 			if added := r.pendingSteer(); len(added) > 0 {
-				history = r.appendSteer(history, added, step)
+				history = r.appendSteer(ctx, history, added, step)
 				continue
 			}
 			if consulted {
@@ -474,7 +474,7 @@ func (r *Runner) pendingSteer() []string {
 func (r *Runner) steer(ctx context.Context, history []Message, step int) []Message {
 	if added := r.pendingSteer(); len(added) > 0 {
 		r.cfg.Logger.InfoContext(ctx, "agent: steered", "step", step, "messages", len(added))
-		return r.appendSteer(history, added, step)
+		return r.appendSteer(ctx, history, added, step)
 	}
 	return history
 }
@@ -482,12 +482,13 @@ func (r *Runner) steer(ctx context.Context, history []Message, step int) []Messa
 // appendSteer adds the person's messages after the last step. A tool result
 // must directly follow the call that asked for it, so the messages come
 // after every result of that step, which is where the loop stands.
-func (r *Runner) appendSteer(history []Message, added []string, step int) []Message {
+func (r *Runner) appendSteer(ctx context.Context, history []Message, added []string, step int) []Message {
 	for _, text := range added {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
 		}
+		setPersonRequest(ctx, text)
 		m := Message{Role: RoleUser, Content: text}
 		history = append(history, m)
 		r.record(m)
