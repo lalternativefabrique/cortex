@@ -660,13 +660,14 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 
 	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
-		Client:   client,
-		Redact:   s.redactor.Redact,
-		Tools:    s.withReadAttachment(withoutMemory(s.turnTools(client, req.DeepResearch, researched), conv.incognito), files),
-		Deferred: deferredWithoutMemory(s.deferredTools(), conv.incognito),
-		Steer:    steer,
-		System:   s.system(req.System, conv.incognito),
-		MaxSteps: steps,
+		Client:       client,
+		Redact:       s.redactor.Redact,
+		Tools:        s.withReadAttachment(withoutMemory(s.turnTools(client, req.DeepResearch, researched), conv.incognito), files),
+		Deferred:     deferredWithoutMemory(s.deferredTools(), conv.incognito),
+		Steer:        steer,
+		System:       s.system(req.System, conv.incognito),
+		MaxSteps:     steps,
+		CloseOnBound: true,
 		// Without it the history only grows, and a long conversation ends
 		// against the model's limit rather than being compacted into itself.
 		ContextWindow:  s.cfg.ContextWindow,

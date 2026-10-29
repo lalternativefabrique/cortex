@@ -46,7 +46,7 @@ func TestAnIncognitoConversationNeitherRecallsNorRemembers(t *testing.T) {
 			journaled <- e
 			return nil
 		}),
-		Tools:    []agent.Tool{namedTool("lalter__recall_memory"), namedTool("find_notes")},
+		Tools:    []agent.Tool{namedTool("lalter__recall_memory"), namedTool("lalter__recent_activity"), namedTool("find_notes")},
 		Provider: agent.Provider{BaseURL: model.URL + "/v1", APIKey: "k", Model: "m"},
 	})
 	if err != nil {
@@ -90,11 +90,55 @@ func TestAnIncognitoConversationNeitherRecallsNorRemembers(t *testing.T) {
 		t.Fatalf("model called %d times", len(sent))
 	}
 	for _, body := range sent {
-		if strings.Contains(body, "recall_memory") {
-			t.Fatal("recall_memory was offered")
+		if strings.Contains(body, "recall_memory") || strings.Contains(body, "recent_activity") {
+			t.Fatal("a tool reading the past was offered")
 		}
 		if !strings.Contains(body, "find_notes") {
 			t.Fatal("the person's other tools were dropped")
 		}
+	}
+}
+
+func TestATurnCutOnItsStepsStillAnswers(t *testing.T) {
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"tools"`) {
+			sse(w, "Rien trouvé dans tes notes.")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[`+
+			`{"index":0,"id":"c1","type":"function","function":{"name":"find_notes","arguments":"{}"}}`+
+			`]},"finish_reason":"tool_calls"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer model.Close()
+
+	s, err := New(Config{
+		Root:         t.TempDir(),
+		Token:        "t",
+		Instructions: "You help a person with their day.",
+		Tools:        []agent.Tool{namedTool("find_notes")},
+		MaxSteps:     1,
+		Provider:     agent.Provider{BaseURL: model.URL + "/v1", APIKey: "k", Model: "m"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /turn", s.handleTurn)
+	srv := httptest.NewServer(s.authenticated(mux))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/turn", strings.NewReader(`{"message":"retrouve le post"}`))
+	req.Header.Set("Authorization", "Bearer t")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if !strings.Contains(string(body), "Rien trouvé dans tes notes.") {
+		t.Fatalf("the cut turn ended without an answer: %s", body)
 	}
 }

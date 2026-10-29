@@ -6,10 +6,17 @@ import (
 	"github.com/lalternative/packages/go/cortex/agent"
 )
 
-// memoryTool is recall_memory, offered in process or by an MCP server under
-// a "<server>__" prefix.
+var memoryTools = []string{"recall_memory", "recent_activity"}
+
+// memoryTool reports a tool that reads what came before, offered in process
+// or by an MCP server under a "<server>__" prefix.
 func memoryTool(name string) bool {
-	return name == "recall_memory" || strings.HasSuffix(name, "__recall_memory")
+	for _, tool := range memoryTools {
+		if name == tool || strings.HasSuffix(name, "__"+tool) {
+			return true
+		}
+	}
+	return false
 }
 
 func withoutMemory(tools []agent.Tool, incognito bool) []agent.Tool {
