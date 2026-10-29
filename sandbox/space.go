@@ -35,11 +35,11 @@ type Space struct {
 	StartTimeout   time.Duration
 	DefaultTimeout time.Duration
 
-	once    sync.Once
-	name    string
-	up      *exec.Cmd
-	upIn    io.WriteCloser
-	started error
+	mu     sync.Mutex
+	name   string
+	up     *exec.Cmd
+	upIn   io.WriteCloser
+	exited chan struct{}
 }
 
 func (s *Space) Name() string { return "sklp-agent-space" }
@@ -80,6 +80,8 @@ func (s *Space) Warm(ctx context.Context) {
 // Close ends the space with the agent: `sklp agent up` tears it down when
 // its input closes.
 func (s *Space) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.upIn == nil {
 		return nil
 	}
@@ -100,12 +102,25 @@ func (s *Space) inside(dir string) (string, error) {
 	return filepath.Join(SpaceWorkdir, rel), nil
 }
 
-// start opens the space once and waits until a command runs in it. If it
-// cannot start, every command fails: falling back to the host would drop
-// the very boundary the space is for.
+// start opens the space, or reopens it when it stopped, and waits until a
+// command runs in it. If it cannot start, the command fails: falling back to
+// the host would drop the very boundary the space is for.
 func (s *Space) start(ctx context.Context) error {
-	s.once.Do(func() { s.started = s.open(ctx) })
-	return s.started
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited != nil {
+		select {
+		case <-s.exited:
+		default:
+			return nil
+		}
+	}
+	err := s.open(ctx)
+	if err != nil && s.up != nil && s.up.Process != nil {
+		_ = s.upIn.Close()
+		_ = s.up.Process.Kill()
+	}
+	return err
 }
 
 func (s *Space) open(ctx context.Context) error {
@@ -130,7 +145,9 @@ func (s *Space) open(ctx context.Context) error {
 	if err := up.Start(); err != nil {
 		return fmt.Errorf("sandbox: start agent space: %w", err)
 	}
-	s.up, s.upIn = up, in
+	exited := make(chan struct{})
+	s.up, s.upIn, s.exited = up, in, exited
+	go func() { _ = up.Wait(); close(exited) }()
 
 	// The first line names the space; what follows is not needed.
 	first, err := bufio.NewReader(out).ReadString('\n')
@@ -141,8 +158,6 @@ func (s *Space) open(ctx context.Context) error {
 	}
 	s.name = name
 
-	exited := make(chan error, 1)
-	go func() { exited <- up.Wait() }()
 	limit := s.StartTimeout
 	if limit == 0 {
 		limit = 15 * time.Minute
