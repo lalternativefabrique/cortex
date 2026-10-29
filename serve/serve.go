@@ -108,6 +108,9 @@ type Config struct {
 	// Pricer prices a turn's usage for the window. Nil reports every turn
 	// unpriced, which is not an error.
 	Pricer Pricer
+	// EnvPassthrough names environment variables commands keep beyond
+	// sandbox.DefaultInherit; tokens and keys are dropped otherwise.
+	EnvPassthrough []string
 	// Approver gates writes and commands. Nil approves everything, which is
 	// right when the person asking is the person whose machine it is.
 	Approver tools.Approver
@@ -247,7 +250,7 @@ func codingTools(cfg Config) []agent.Tool {
 		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewBash(tools.BashConfig{
 			Root:        cfg.Root,
-			Sandbox:     sandbox.NewDirect(),
+			Sandbox:     &sandbox.Direct{Shell: "/bin/sh", Inherit: sandbox.DefaultInherit, Passthrough: cfg.EnvPassthrough},
 			Approver:    cfg.Approver,
 			Workstation: true,
 		}),

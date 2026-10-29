@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -20,13 +19,18 @@ type Direct struct {
 	Shell string
 	// DefaultTimeout applies when Command.Timeout is zero.
 	DefaultTimeout time.Duration
+	// Inherit lists the environment names a command keeps; nil keeps the
+	// whole environment, tokens and keys included.
+	Inherit []string
+	// Passthrough adds names the operator chose to hand to commands.
+	Passthrough []string
 }
 
 const defaultCommandTimeout = 2 * time.Minute
 
 // NewDirect returns a Direct sandbox with the standard shell and timeout.
 func NewDirect() *Direct {
-	return &Direct{Shell: "/bin/sh", DefaultTimeout: defaultCommandTimeout}
+	return &Direct{Shell: "/bin/sh", DefaultTimeout: defaultCommandTimeout, Inherit: DefaultInherit}
 }
 
 func (d *Direct) Name() string { return "none" }
@@ -51,9 +55,7 @@ func (d *Direct) Run(ctx context.Context, c Command) (Output, error) {
 	cmd := exec.CommandContext(cctx, shell, "-c", c.Line)
 	cmd.Dir = c.Dir
 	cmd.Stdin = c.Stdin
-	if len(c.Env) > 0 {
-		cmd.Env = append(os.Environ(), c.Env...)
-	}
+	cmd.Env = append(d.environ(), c.Env...)
 	// A shell spawns children; killing only the shell leaves them running
 	// and holding the pipes open, so the whole group is signalled instead.
 	setProcessGroup(cmd)
