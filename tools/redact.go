@@ -117,8 +117,8 @@ func addSecretValue(seen map[string]bool, value string) {
 	}
 }
 
-// secretFileValues reads the values of a dotenv or "key: value" file; a key
-// file (a PEM) is masked by its shape instead.
+// secretFileValues reads the values a dotenv or "key: value" file gives to
+// keys named like secrets; a key file (a PEM) is masked by its shape instead.
 func secretFileValues(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -136,9 +136,14 @@ func secretFileValues(path string) []string {
 			continue
 		}
 		line = strings.TrimPrefix(line, "export ")
-		if _, v, ok := strings.Cut(line, "="); ok {
-			values = append(values, v)
-		} else if _, v, ok := strings.Cut(line, ": "); ok {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			k, v, ok = strings.Cut(line, ": ")
+		}
+		// A URL or a port in the same file is configuration, and masking it
+		// hides what the agent needs to read; a credential in a URL is
+		// masked by its shape anyway.
+		if ok && looksSecretName(k) {
 			values = append(values, v)
 		}
 	}

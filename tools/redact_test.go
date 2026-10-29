@@ -78,3 +78,16 @@ func TestSecretFilesListsWhatASandboxMustHide(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactorLeavesTheConfigurationOfASecretFileReadable(t *testing.T) {
+	root := t.TempDir()
+	writeTemp(t, root, ".env", "WEB_URL=http://localhost:5273\nCORE_URL=http://127.0.0.1:4100\nAPI_TOKEN="+leakedValue+"\n")
+	r := &SecretRedactor{Root: root}
+	out, _ := r.Redact("open http://localhost:5273/app then call http://127.0.0.1:4100 with " + leakedValue)
+	if !strings.Contains(out, "http://localhost:5273/app") || !strings.Contains(out, "http://127.0.0.1:4100") {
+		t.Fatalf("a URL from .env was masked: %q", out)
+	}
+	if strings.Contains(out, leakedValue) {
+		t.Fatalf("the token was not masked: %q", out)
+	}
+}
