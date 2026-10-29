@@ -83,6 +83,9 @@ type Config struct {
 	CloseOnBound bool
 	// ToolTimeout caps a single tool execution. Zero means DefaultToolTimeout.
 	ToolTimeout time.Duration
+	// Redact masks secrets in a tool's result before the model, the trace or
+	// the history see it, and reports whether it masked any.
+	Redact func(string) (string, bool)
 	// MaxToolResultBytes caps what a single tool result contributes to the
 	// context. Zero means DefaultMaxToolResultBytes.
 	MaxToolResultBytes int
@@ -560,10 +563,16 @@ func (r *Runner) executeOne(ctx context.Context, call ToolCall) toolOutcome {
 		Arguments: string(call.Arguments),
 	}
 	finish := func(content string, err error) toolOutcome {
+		hit := false
+		content, hit = r.redact(content, hit)
+		trace.Metadata, hit = r.redactValue(trace.Metadata, hit)
+		if hit {
+			r.cfg.Logger.ErrorContext(ctx, "🔴 SECRET: masked a secret in a tool result", "tool", call.Name)
+		}
 		trace.DurationMs = time.Since(started).Milliseconds()
 		trace.Result = content
 		if err != nil {
-			trace.Err = err.Error()
+			trace.Err, _ = r.redact(err.Error(), false)
 			r.cfg.Logger.WarnContext(ctx, "agent: tool failed", "tool", call.Name, "duration_ms", trace.DurationMs, "error", err)
 		} else {
 			r.cfg.Logger.InfoContext(ctx, "agent: tool called", "tool", call.Name, "duration_ms", trace.DurationMs, "result_bytes", len(content))
@@ -756,4 +765,47 @@ func (r *Runner) record(m Message) {
 	if err := r.cfg.Recorder.Append(m); err != nil {
 		r.cfg.Callback.OnError(fmt.Errorf("record message: %w", err))
 	}
+}
+
+func (r *Runner) redact(text string, hit bool) (string, bool) {
+	if r.cfg.Redact == nil {
+		return text, hit
+	}
+	masked, found := r.cfg.Redact(text)
+	return masked, hit || found
+}
+
+// redactValue masks every string inside a tool's metadata, which the window
+// shows as it is.
+func (r *Runner) redactValue(v map[string]any, hit bool) (map[string]any, bool) {
+	if r.cfg.Redact == nil || v == nil {
+		return v, hit
+	}
+	out := make(map[string]any, len(v))
+	for k, val := range v {
+		out[k], hit = r.redactAny(val, hit)
+	}
+	return out, hit
+}
+
+func (r *Runner) redactAny(v any, hit bool) (any, bool) {
+	switch t := v.(type) {
+	case string:
+		return r.redact(t, hit)
+	case []string:
+		out := make([]string, len(t))
+		for i, s := range t {
+			out[i], hit = r.redact(s, hit)
+		}
+		return out, hit
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i], hit = r.redactAny(e, hit)
+		}
+		return out, hit
+	case map[string]any:
+		return r.redactValue(t, hit)
+	}
+	return v, hit
 }

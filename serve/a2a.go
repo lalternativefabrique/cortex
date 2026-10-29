@@ -131,6 +131,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:        client,
+		Redact:        e.redactor.Redact,
 		Tools:         e.turnTools(client, delegatedResearch, researched),
 		Deferred:      e.deferredTools(),
 		System:        e.system(""),

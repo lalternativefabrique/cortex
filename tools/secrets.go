@@ -39,6 +39,12 @@ var secretFiles = []string{
 	"/proc/self/environ", "/environ",
 }
 
+// secretFileGlobs keep a content search out of the files that hold secrets.
+var secretFileGlobs = []string{
+	".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*",
+	".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials",
+}
+
 // secretFilesFine are look-alikes that hold no secret.
 var secretFilesFine = []string{".env.example", ".env.sample", ".env.template", ".pub", ".keys", ".key.go"}
 

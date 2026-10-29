@@ -61,6 +61,9 @@ func searchNative(ctx context.Context, root, base string, args grepArgs, maxMatc
 		if args.Glob != "" && !matchGlob(args.Glob, relativeToRoot(root, path)) {
 			return nil
 		}
+		if isSecretPath(path) {
+			return nil
+		}
 		if matches >= maxMatches {
 			capped = true
 			return filepath.SkipAll

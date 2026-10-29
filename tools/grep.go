@@ -132,6 +132,9 @@ func (t *grepTool) searchRipgrep(ctx context.Context, rg, searchPath string, arg
 	if args.Glob != "" {
 		rgArgs = append(rgArgs, "--glob", args.Glob)
 	}
+	for _, g := range secretFileGlobs {
+		rgArgs = append(rgArgs, "--glob", "!"+g)
+	}
 	rgArgs = append(rgArgs, "--max-count", fmt.Sprint(t.cfg.MaxMatches), "--", args.Pattern, searchPath)
 
 	out, runErr := exec.CommandContext(ctx, rg, rgArgs...).Output()

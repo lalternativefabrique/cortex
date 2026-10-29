@@ -127,9 +127,10 @@ type Config struct {
 
 // Server answers turns from a front end running elsewhere.
 type Server struct {
-	cfg    Config
-	tools  []agent.Tool
-	skills skills.Set
+	cfg      Config
+	redactor *tools.SecretRedactor
+	tools    []agent.Tool
+	skills   skills.Set
 	// mcpSession holds the connections to whatever Config.MCP named, so
 	// Close can shut them down. Nil when no server was configured.
 	mcpSession *mcp.Session
@@ -177,9 +178,10 @@ func New(cfg Config) (*Server, error) {
 		cfg.Approver = tools.AllowAll{}
 	}
 	srv := &Server{
-		cfg:    cfg,
-		talks:  map[string]*talk{},
-		pricer: cfg.Pricer,
+		cfg:      cfg,
+		redactor: &tools.SecretRedactor{Root: cfg.Root},
+		talks:    map[string]*talk{},
+		pricer:   cfg.Pricer,
 	}
 	if srv.assistant() {
 		srv.skills = skills.Set{}
@@ -641,6 +643,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	researched := &researchSpend{}
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
+		Redact:   s.redactor.Redact,
 		Tools:    s.withReadAttachment(s.turnTools(client, req.DeepResearch, researched), files),
 		Deferred: s.deferredTools(),
 		Steer:    steer,
