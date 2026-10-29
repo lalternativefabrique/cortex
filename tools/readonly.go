@@ -58,8 +58,20 @@ func isReadOnlyCommand(line string) bool {
 
 // splitStages breaks a command line on the separators that chain commands.
 func splitStages(line string) []string {
-	replacer := strings.NewReplacer("&&", "\x00", "||", "\x00", ";", "\x00", "|", "\x00")
-	return strings.Split(replacer.Replace(line), "\x00")
+	replacer := strings.NewReplacer("&&", "\x00", "||", "\x00", ";", "\x00", "|", "\x00", "\n", "\x00")
+	line = replacer.Replace(line)
+	// A lone "&" backgrounds a command and starts another; in "2>&1" or
+	// "&>file" it is part of a redirection.
+	var b strings.Builder
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if c == '&' && (i == 0 || line[i-1] != '>') && (i+1 == len(line) || line[i+1] != '>') {
+			b.WriteByte(0)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return strings.Split(b.String(), "\x00")
 }
 
 // matchesAnyPrefix reports whether the line starts with one of the patterns,

