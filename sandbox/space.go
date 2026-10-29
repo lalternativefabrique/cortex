@@ -1,12 +1,10 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,41 +15,34 @@ import (
 // SpaceWorkdir is where the workspace is mounted inside the space.
 const SpaceWorkdir = "/workspace"
 
-// Space runs every command inside a sklp space: a rootless container that
-// sees the workspace and nothing else of the machine — no home directory,
-// no other process, no loopback of the host, no credential in its
-// environment. Files listed in Hidden are mounted empty, so a secret stays
-// out of reach whatever command reads it.
+// Space runs every command inside the workspace's sklp agent space
+// (`sklp agent up`): the CI runner's environment from .sklp/space.yaml,
+// held open for the session, that sees the workspace and nothing else of
+// the machine — no home directory, no other process, no loopback of the
+// host, no credential in its environment, its secret files mounted empty.
 type Space struct {
-	// Sklp is the sklp binary; it needs "space up -mount".
+	// Sklp is the sklp binary; it needs "agent up".
 	Sklp string
 	// Root is the host workspace, mounted read-write at SpaceWorkdir.
 	Root string
-	// Image is the OCI image the space starts from. Empty builds the
-	// workspace's own .sklp/space.yaml recipe.
-	Image string
-	// Hidden are host paths under Root mounted empty and read-only.
+	// Hidden are extra files under Root to mount empty, beyond those sklp
+	// recognises as secret by name.
 	Hidden []string
-	// ReadOnly are host paths under Root mounted read-only.
-	ReadOnly []string
-	// StartTimeout bounds how long the first command waits for the space.
+	// Mounts are extra "host:space[:ro]" binds.
+	Mounts []string
+	// StartTimeout bounds how long the first command waits for the space,
+	// the first build of the workspace's recipe included.
 	StartTimeout   time.Duration
 	DefaultTimeout time.Duration
 
 	once    sync.Once
+	name    string
 	up      *exec.Cmd
 	upIn    io.WriteCloser
 	started error
 }
 
-// SpaceName is the space a workspace gets: stable per directory, so a
-// restarted agent finds the same one.
-func SpaceName(root string) string {
-	sum := sha256.Sum256([]byte(root))
-	return "ark-" + strings.ToLower(filepath.Base(root)) + "-" + hex.EncodeToString(sum[:])[:8]
-}
-
-func (s *Space) Name() string { return "sklp-space" }
+func (s *Space) Name() string { return "sklp-agent-space" }
 
 func (s *Space) Run(ctx context.Context, c Command) (Output, error) {
 	if err := s.start(ctx); err != nil {
@@ -72,7 +63,7 @@ func (s *Space) Run(ctx context.Context, c Command) (Output, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	args := []string{"space", "exec", SpaceName(s.Root), "--", "env"}
+	args := []string{"space", "exec", s.name, "--", "env"}
 	args = append(args, c.Env...)
 	args = append(args, "sh", "-c", "cd "+shellQuote(dir)+" && "+c.Line)
 	cmd := exec.CommandContext(cctx, s.Sklp, args...)
@@ -80,14 +71,20 @@ func (s *Space) Run(ctx context.Context, c Command) (Output, error) {
 	return execute(cctx, cmd, c, started)
 }
 
-// Close ends the space with the agent: its shell exits when its input
-// closes, and sklp stops the space behind it.
+// Warm opens the space ahead of the first command, so building the
+// workspace's recipe does not stall it.
+func (s *Space) Warm(ctx context.Context) {
+	go func() { _ = s.start(ctx) }()
+}
+
+// Close ends the space with the agent: `sklp agent up` tears it down when
+// its input closes.
 func (s *Space) Close() error {
 	if s.upIn == nil {
 		return nil
 	}
 	_ = s.upIn.Close()
-	time.AfterFunc(10*time.Second, func() { _ = s.up.Process.Kill() })
+	time.AfterFunc(30*time.Second, func() { _ = s.up.Process.Kill() })
 	return nil
 }
 
@@ -103,78 +100,81 @@ func (s *Space) inside(dir string) (string, error) {
 	return filepath.Join(SpaceWorkdir, rel), nil
 }
 
-// start opens the space once, in the foreground of a sklp process kept alive
-// by an open input, and waits until a command runs in it. If it cannot
-// start, every command fails: falling back to the host would drop the very
-// boundary the space is for.
+// start opens the space once and waits until a command runs in it. If it
+// cannot start, every command fails: falling back to the host would drop
+// the very boundary the space is for.
 func (s *Space) start(ctx context.Context) error {
 	s.once.Do(func() { s.started = s.open(ctx) })
 	return s.started
 }
 
 func (s *Space) open(ctx context.Context) error {
-	name := SpaceName(s.Root)
-	if s.ready(ctx, name) {
-		return nil
-	}
-	args := []string{"space", "up", "-workdir", SpaceWorkdir, "-mount", s.Root + ":" + SpaceWorkdir}
-	for _, p := range s.ReadOnly {
-		if in, err := s.inside(p); err == nil {
-			args = append(args, "-mount", p+":"+in+":ro")
-		}
-	}
+	args := []string{"agent", "up", "-repo", s.Root}
 	for _, p := range s.Hidden {
-		if in, err := s.inside(p); err == nil {
-			args = append(args, "-mount", os.DevNull+":"+in+":ro")
-		}
+		args = append(args, "-hide", p)
 	}
-	if s.Image != "" {
-		args = append(args, "-image", s.Image)
-	} else {
-		args = append(args, "-repo", s.Root)
+	for _, m := range s.Mounts {
+		args = append(args, "-mount", m)
 	}
-	args = append(args, name)
 	up := exec.Command(s.Sklp, args...)
 	in, err := up.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("sandbox: space input: %w", err)
+		return fmt.Errorf("sandbox: agent space input: %w", err)
+	}
+	out, err := up.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("sandbox: agent space output: %w", err)
 	}
 	var said strings.Builder
-	up.Stdout, up.Stderr = io.Discard, &lockedWriter{w: &said}
+	up.Stderr = &lockedWriter{w: &said}
 	if err := up.Start(); err != nil {
-		return fmt.Errorf("sandbox: start space %s: %w", name, err)
+		return fmt.Errorf("sandbox: start agent space: %w", err)
 	}
 	s.up, s.upIn = up, in
 
-	limit := s.StartTimeout
-	if limit == 0 {
-		limit = 10 * time.Minute
+	// The first line names the space; what follows is not needed.
+	first, err := bufio.NewReader(out).ReadString('\n')
+	go func() { _, _ = io.Copy(io.Discard, out) }()
+	name, ok := strings.CutPrefix(strings.TrimSpace(first), "agent space name=")
+	if err != nil || !ok || name == "" {
+		return fmt.Errorf("sandbox: sklp agent up did not name its space: %q %s", first, strings.TrimSpace(said.String()))
 	}
+	s.name = name
+
 	exited := make(chan error, 1)
 	go func() { exited <- up.Wait() }()
+	limit := s.StartTimeout
+	if limit == 0 {
+		limit = 15 * time.Minute
+	}
 	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
-		if s.ready(ctx, name) {
+		if s.ready(ctx) {
 			return nil
 		}
 		select {
 		case <-exited:
-			return fmt.Errorf("sandbox: space %s stopped while starting: %s", name, strings.TrimSpace(said.String()))
-		default:
-		}
-		select {
+			return fmt.Errorf("sandbox: agent space %s stopped while starting: %s", name, lastLines(said.String(), 5))
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(2 * time.Second):
 		}
 	}
-	return fmt.Errorf("sandbox: space %s did not start within %s", name, limit)
+	return fmt.Errorf("sandbox: agent space %s did not start within %s", name, limit)
 }
 
-func (s *Space) ready(ctx context.Context, name string) bool {
+func (s *Space) ready(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(cctx, s.Sklp, "space", "exec", name, "--", "true").Run() == nil
+	return exec.CommandContext(cctx, s.Sklp, "space", "exec", s.name, "--", "true").Run() == nil
+}
+
+func lastLines(text string, n int) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func shellQuote(s string) string {
