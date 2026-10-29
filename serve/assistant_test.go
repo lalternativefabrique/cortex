@@ -62,7 +62,7 @@ func TestAnAssistantIsPromptedByItsInstructionsAndItsServers(t *testing.T) {
 	}
 	defer s.Close()
 
-	prompt := s.system("")
+	prompt := s.system("", false)
 	if !strings.HasPrefix(prompt, "You help a person with their day.") {
 		t.Fatalf("the assistant's instructions do not lead the prompt:\n%s", prompt)
 	}

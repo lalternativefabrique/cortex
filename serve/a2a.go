@@ -134,7 +134,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 		Redact:        e.redactor.Redact,
 		Tools:         e.turnTools(client, delegatedResearch, researched),
 		Deferred:      e.deferredTools(),
-		System:        e.system(""),
+		System:        e.system("", false),
 		MaxSteps:      e.cfg.MaxSteps,
 		ContextWindow: e.cfg.ContextWindow,
 	})

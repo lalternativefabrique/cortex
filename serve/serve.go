@@ -164,9 +164,10 @@ type talk struct {
 	store *session.Store
 	// running is set while a turn is answered; pending holds what the person
 	// added to it, until the next step takes it.
-	running bool
-	pending []string
-	files   []Attachment
+	running   bool
+	pending   []string
+	files     []Attachment
+	incognito bool
 }
 
 // New builds the server and the tool set it exposes.
@@ -401,6 +402,9 @@ type TurnRequest struct {
 	// Files are attached to Message and stay readable for the rest of the
 	// conversation.
 	Files []TurnFile `json:"files,omitempty"`
+	// Recall false opens an incognito conversation: nothing remembered from
+	// before, nothing written for later. Read on the first turn only.
+	Recall *bool `json:"recall,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -593,12 +597,15 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 
 	sink := &eventSink{emit: emit}
-	if s.cfg.Recall != nil {
+	if s.cfg.Recall != nil && !conv.incognito {
 		sink.memory = recall.NewRecorder(r.Context(), s.cfg.Recall, recall.Scope{}, id)
 		sink.memory.Said(uuid.NewString(), "user", question)
 	}
 	var answer, failure string
 	defer func() {
+		if conv.incognito {
+			return
+		}
 		s.journal(r.Context(), JournalEntry{
 			Conversation: id,
 			Turn:         uuid.NewString(),
@@ -615,7 +622,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	// open, which as a non-nil interface holding a nil pointer would not
 	// compare equal to nil at the point loop.go checks it.
 	var memRecorder agent.MemoryRecorder
-	if !s.assistant() {
+	if !s.assistant() && !conv.incognito {
 		if memStore, err := memory.NewStore(s.cfg.Root); err != nil {
 			slog.Warn("serve: project memory unavailable", "error", err)
 		} else {
@@ -644,10 +651,10 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	runner, err := agent.NewRunner(agent.Config{
 		Client:   client,
 		Redact:   s.redactor.Redact,
-		Tools:    s.withReadAttachment(s.turnTools(client, req.DeepResearch, researched), files),
-		Deferred: s.deferredTools(),
+		Tools:    s.withReadAttachment(withoutMemory(s.turnTools(client, req.DeepResearch, researched), conv.incognito), files),
+		Deferred: deferredWithoutMemory(s.deferredTools(), conv.incognito),
 		Steer:    steer,
-		System:   s.system(req.System),
+		System:   s.system(req.System, conv.incognito),
 		MaxSteps: steps,
 		// Without it the history only grows, and a long conversation ends
 		// against the model's limit rather than being compacted into itself.
@@ -719,7 +726,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 //
 // The caller writes the conversation's own prompt and knows nothing about
 // where it runs; the workspace description is what only this side has.
-func (s *Server) system(caller string) string {
+func (s *Server) system(caller string, incognito bool) string {
 	var b strings.Builder
 	if strings.TrimSpace(caller) != "" {
 		b.WriteString(strings.TrimSpace(caller))
@@ -738,7 +745,7 @@ func (s *Server) system(caller string) string {
 	// How to work, and then what is being worked on. Without the first the
 	// agent has tools and no idea what is expected of it, and answers a
 	// one-line question with twenty commands; the CLI never ran without it.
-	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root, RecentSessions: promptctx.DefaultRecentSessions}); err == nil {
+	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root, RecentSessions: promptctx.DefaultRecentSessions, NoMemory: incognito}); err == nil {
 		b.WriteString(base)
 		b.WriteString("\n\n")
 	} else {
@@ -777,12 +784,16 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	}
 
 	id := uuid.NewString()
-	opened := &talk{}
+	opened := &talk{incognito: req.Recall != nil && !*req.Recall}
 	if req.Message == "" && len(req.Messages) > 1 {
 		opened.history = toAgentMessages(req.Messages[:len(req.Messages)-1])
 	}
 	// Written as it goes, so a conversation outlives the window having it.
 	// A store that cannot be opened costs the transcript and nothing else.
+	if opened.incognito {
+		s.talks[id] = opened
+		return id, opened
+	}
 	if store, _, err := session.Create(time.Now(), s.cfg.Root, s.cfg.Provider.Model, firstAsk(req)); err == nil {
 		opened.store = store
 	} else {
@@ -1087,7 +1098,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		Model:         s.cfg.Provider.Model,
 		BaseURL:       s.cfg.Provider.BaseURL,
 		ContextWindow: s.cfg.ContextWindow,
-		System:        s.system(""),
+		System:        s.system("", false),
 	}
 	view.SystemTokens = agent.EstimateTokens(view.System)
 	for _, tool := range s.tools {

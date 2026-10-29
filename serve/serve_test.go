@@ -115,7 +115,7 @@ func TestTheCallerPromptIsKeptAndSaysHowToWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := s.system("You are a careful assistant.")
+	prompt := s.system("You are a careful assistant.", false)
 	if !strings.Contains(prompt, "You are a careful assistant.") {
 		t.Fatal("the caller's instructions were dropped")
 	}

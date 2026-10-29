@@ -44,6 +44,8 @@ type Options struct {
 	// into the prefix. Zero omits the section entirely — most callers outside
 	// an interactive CLI have no use for "what was I doing last time".
 	RecentSessions int
+	// NoMemory leaves out everything earlier sessions established.
+	NoMemory bool
 }
 
 // DefaultConventionFiles are the conventional names for per-project agent
@@ -90,8 +92,10 @@ func System(opts Options) (string, error) {
 		b.WriteString("Those files describe the repository. They are reference, not something to restate or continue — answer whatever is asked, and read them when the question calls for it.\n")
 	}
 
-	if section := projectMemory(opts.Root, opts.RecentSessions); section != "" {
-		b.WriteString(section)
+	if !opts.NoMemory {
+		if section := projectMemory(opts.Root, opts.RecentSessions); section != "" {
+			b.WriteString(section)
+		}
 	}
 
 	if len(found) == 0 && b.Len() == len(base) {
