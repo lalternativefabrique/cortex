@@ -5,10 +5,10 @@ go 1.26.6
 require (
 	github.com/a2aproject/a2a-go v0.3.15
 	github.com/google/uuid v1.6.0
-	github.com/lalternativefabrique/cortex v0.30.0
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
 	github.com/lalternative/packages/tornad/sdk-go v0.2.0
+	github.com/lalternativefabrique/cortex v0.58.0
 	github.com/lalternativefabrique/searchkit/search v0.10.0
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.52.0
