@@ -1,0 +1,1284 @@
+// Package serve runs the agent on this machine, for a front end that is not
+// on it.
+//
+// The desktop app shows a conversation served from somewhere else — the
+// session, the history and what it cost live on a server. What that server
+// cannot do is read the repository someone is working in right now: the
+// uncommitted change, the branch in progress, the test that only passes with
+// their environment. This is what closes that gap. The window talks to a
+// server for who you are, and to this for what you have.
+package serve
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/a2aproject/a2a-go/a2asrv"
+	"github.com/google/uuid"
+
+	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternative/packages/go/cortex/mcp"
+	"github.com/lalternative/packages/go/cortex/memory"
+	"github.com/lalternative/packages/go/cortex/promptctx"
+	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternative/packages/go/cortex/sandbox"
+	"github.com/lalternative/packages/go/cortex/session"
+	"github.com/lalternative/packages/go/cortex/skills"
+	"github.com/lalternative/packages/go/cortex/tools"
+)
+
+// Config parameterises the local server.
+type Config struct {
+	// Root is the workspace every tool is confined to. Every path read or
+	// written resolves under it, and nothing outside it exists for the agent.
+	Root string
+	// Instructions, when set, makes this an assistant rather than a coding
+	// agent. They replace the coding agent's prompt and each MCP server's own
+	// instructions follow them; the conversation does not open on the
+	// repository, no skill is read from disk, and the workspace tools are
+	// read, grep and glob over Files plus write under Root — no edit, no bash.
+	Instructions string
+	// Files is the folder an assistant's read, grep and glob see. Empty means
+	// Root. Its hidden files and folders are never read.
+	Files string
+	// Recall, when set, remembers every turn as it happens: the question,
+	// each tool action, the answer. A turn stopped half-way keeps what it
+	// did. Whose memory it is belongs to the store; the scope it is handed
+	// carries only the conversation.
+	Recall recall.Store
+	// Journal, when set, is handed each finished turn once, answered or not.
+	Journal Journal
+	// Provider is the model this machine calls. Calling it from here rather
+	// than through the server keeps the repository's contents on this machine:
+	// what leaves is the conversation, not the code.
+	Provider agent.Provider
+	// Addr is where to listen. Empty means 127.0.0.1 on a free port, which is
+	// the only address that makes sense — this exposes a shell.
+	Addr string
+	// PublicURL is the address an A2A client reaches this agent on, which is
+	// what its Agent Card advertises. Empty leaves the card's url empty
+	// rather than advertising a loopback port no peer can reach.
+	PublicURL string
+	// Token authenticates the window. Empty generates one, printed on start.
+	Token string
+	// MaxSteps bounds one turn. Zero leaves the agent's own default.
+	MaxSteps int
+	// ContextWindow is the model's context length in tokens, which is what
+	// lets a conversation be evicted and compacted rather than run into it.
+	// Zero disables both.
+	ContextWindow int
+	// The capabilities below are what the host can do, not what it is built
+	// on. Each is an interface the kernel calls and never constructs: which
+	// service answers a search, reads a page or describes an image is the
+	// host's business, and a nil one simply leaves its tool out — a
+	// deployment does not offer what it cannot serve.
+	//
+	// Searcher enables web_search.
+	Searcher tools.Searcher
+	// Geocoder resolves place names. It enables the map on a local search,
+	// and is half of what weather needs.
+	Geocoder tools.Geocoder
+	// ReviewedPlaces is tried before Geocoder on a local search, for results
+	// carrying reviews.
+	ReviewedPlaces tools.ReviewedPlaceFinder
+	// PageFetcher enables fetch_url.
+	PageFetcher tools.PageFetcher
+	// Researcher enables research, which searches and reads its sources in
+	// one call. It is the same Searcher when the backend can read pages into
+	// a search answer; nil offers web_search alone, and the model falls back
+	// to searching then fetching, which is what it did before.
+	Researcher tools.Searcher
+	// Explorer enables explore_site.
+	Explorer tools.SiteExplorer
+	// Forecaster is the other half of weather.
+	Forecaster tools.Forecaster
+	// Describer enables describe_image. A Describer that also implements
+	// tools.BytesDescriber enables POST /describe, which describes a pasted
+	// image rather than one in the workspace.
+	Describer tools.Describer
+	// Pricer prices a turn's usage for the window. Nil reports every turn
+	// unpriced, which is not an error.
+	Pricer Pricer
+	// Sandbox runs the shell's commands; nil runs them on this machine with
+	// a stripped environment (sandbox.Direct). Close closes it when it is
+	// an io.Closer, such as a sandbox.Space.
+	Sandbox sandbox.Sandbox
+	// EnvPassthrough names environment variables commands keep beyond
+	// sandbox.DefaultInherit; tokens and keys are dropped otherwise.
+	EnvPassthrough []string
+	// Approver gates writes and commands. Nil approves everything, which is
+	// right when the person asking is the person whose machine it is.
+	Approver tools.Approver
+	// Tools are the host's own, offered beside the built-in ones.
+	Tools []agent.Tool
+	// MCP servers to connect and offer alongside the built-in tools. A
+	// server that fails to start is logged and skipped — losing one
+	// capability is smaller than refusing to serve at all. Empty offers
+	// none, which is right for a deployment that runs unattended: MCP
+	// (a browser, a database) is for the workstation, where a person is
+	// present to notice what it does.
+	MCP mcp.Config
+}
+
+// Server answers turns from a front end running elsewhere.
+type Server struct {
+	cfg      Config
+	redactor *tools.SecretRedactor
+	tools    []agent.Tool
+	skills   skills.Set
+	// mcpSession holds the connections to whatever Config.MCP named, so
+	// Close can shut them down. Nil when no server was configured.
+	mcpSession *mcp.Session
+	// describer is set when a vision model is configured, and is what turns a
+	// pasted screenshot into something the conversation can carry.
+	describer tools.Describer
+	// What each conversation has said and seen, tool results included. The
+	// window holds none of it: a turn only makes sense against what the
+	// agent already read, and sending that back and forth would drop the
+	// eviction and compaction the runner does on it here.
+	mu     sync.Mutex
+	talks  map[string]*talk
+	pricer Pricer
+}
+
+// Pricer converts what a turn used into euros. The host decides where its
+// rates come from.
+type Pricer interface {
+	Cost(ctx context.Context, model string, input, cached, output int) (float64, bool)
+}
+
+// talk is one conversation as the agent sees it.
+type talk struct {
+	history []agent.Message
+	usage   agent.Usage
+	steps   int
+	tools   int
+	// store writes each turn to disk as it is produced, so a conversation
+	// survives the window that was having it. Nil when sessions could not be
+	// opened, which costs the history and nothing else.
+	store *session.Store
+	// running is set while a turn is answered; pending holds what the person
+	// added to it, until the next step takes it.
+	running   bool
+	pending   []string
+	files     []Attachment
+	incognito bool
+}
+
+// New builds the server and the tool set it exposes.
+func New(cfg Config) (*Server, error) {
+	if strings.TrimSpace(cfg.Root) == "" {
+		return nil, fmt.Errorf("serve: Root is required")
+	}
+	if cfg.Approver == nil {
+		cfg.Approver = tools.AllowAll{}
+	}
+	if cfg.Sandbox == nil {
+		cfg.Sandbox = &sandbox.Direct{Shell: "/bin/sh", Inherit: sandbox.DefaultInherit, Passthrough: cfg.EnvPassthrough}
+	}
+	srv := &Server{
+		cfg:      cfg,
+		redactor: &tools.SecretRedactor{Root: cfg.Root},
+		talks:    map[string]*talk{},
+		pricer:   cfg.Pricer,
+	}
+	if srv.assistant() {
+		srv.skills = skills.Set{}
+		srv.tools = assistantTools(cfg)
+	} else {
+		// A skill that cannot be read is one the window will not offer. That is a
+		// worse start than no skills at all, so a broken directory is not fatal.
+		available, err := skills.Load(cfg.Root)
+		if err != nil {
+			slog.Warn("serve: skills unavailable", "error", err)
+		}
+		srv.skills = available
+		srv.tools = codingTools(cfg)
+	}
+	if cfg.Describer != nil {
+		srv.describer = cfg.Describer
+		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
+			Root: cfg.Root, Describer: cfg.Describer,
+		}))
+	}
+	srv.tools = append(srv.tools, cfg.Tools...)
+	if cfg.Searcher != nil {
+		srv.tools = append(srv.tools, tools.NewWebSearch(tools.WebSearchConfig{
+			Searcher:       cfg.Searcher,
+			Geocoder:       cfg.Geocoder,
+			ReviewedPlaces: cfg.ReviewedPlaces,
+		}))
+	}
+	if cfg.PageFetcher != nil {
+		srv.tools = append(srv.tools, tools.NewFetchURL(tools.FetchURLConfig{Fetcher: cfg.PageFetcher}))
+	}
+	if cfg.Researcher != nil {
+		srv.tools = append(srv.tools, tools.NewResearch(tools.ResearchConfig{Searcher: cfg.Researcher}))
+	}
+	if cfg.Explorer != nil {
+		srv.tools = append(srv.tools, tools.NewExploreSite(tools.ExploreConfig{Explorer: cfg.Explorer}))
+	}
+	if weather := (tools.WeatherConfig{Geocoder: cfg.Geocoder, Forecaster: cfg.Forecaster}); weather.Configured() {
+		srv.tools = append(srv.tools, tools.NewWeather(weather))
+	}
+	if len(cfg.MCP.Servers) > 0 {
+		mcpSession, mcpTools, err := mcp.Start(context.Background(), cfg.MCP, func(err error) {
+			slog.Warn("serve: mcp server unavailable", "error", err)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("mcp: %w", err)
+		}
+		srv.mcpSession = mcpSession
+		srv.tools = append(srv.tools, mcpTools...)
+	}
+	return srv, nil
+}
+
+func (s *Server) deferredTools() []agent.Toolset {
+	if s.mcpSession == nil {
+		return nil
+	}
+	return s.mcpSession.Deferred()
+}
+
+func codingTools(cfg Config) []agent.Tool {
+	tracker := tools.NewReadTracker()
+	return []agent.Tool{
+		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
+		tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
+		tools.NewGlob(tools.GlobConfig{Root: cfg.Root}),
+		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewBash(tools.BashConfig{
+			Root:        cfg.Root,
+			Sandbox:     cfg.Sandbox,
+			Approver:    cfg.Approver,
+			Workstation: true,
+		}),
+	}
+}
+
+func assistantTools(cfg Config) []agent.Tool {
+	files := cfg.Files
+	if strings.TrimSpace(files) == "" {
+		files = cfg.Root
+	}
+	return []agent.Tool{
+		tools.NewRead(tools.ReadConfig{Root: files, Approver: hiddenRefused{root: files, next: cfg.Approver}}),
+		tools.NewGrep(tools.GrepConfig{Root: files}),
+		tools.NewGlob(tools.GlobConfig{Root: files}),
+		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Approver: cfg.Approver}),
+	}
+}
+
+func (s *Server) assistant() bool { return strings.TrimSpace(s.cfg.Instructions) != "" }
+
+// Close shuts down what New started besides the listener — the MCP servers,
+// if any were configured. Serve itself does not call this: the process is
+// killed by whatever launched it (Tauri, on the desktop), and the OS reaps
+// the MCP subprocesses along with it. It exists for a caller that wants an
+// orderly shutdown regardless.
+func (s *Server) Close() {
+	if s.mcpSession != nil {
+		s.mcpSession.Close()
+	}
+	if c, ok := s.cfg.Sandbox.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
+// Listen binds the address and returns the listener, so the caller can print
+// the real port before serving on it.
+func (s *Server) Listen() (net.Listener, error) {
+	addr := s.cfg.Addr
+	if addr == "" {
+		// Loopback only, never a wildcard: this endpoint runs shell commands,
+		// and a machine on the same network is not the person at the keyboard.
+		addr = "127.0.0.1:0"
+	}
+	return net.Listen("tcp", addr)
+}
+
+// Serve answers requests until the listener is closed.
+func (s *Server) Serve(ln net.Listener) error {
+	return (&http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}).Serve(ln)
+}
+
+// Handler is what Serve answers with, for a host that mounts it beside its
+// own routes.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /turn", s.handleTurn)
+	mux.HandleFunc("POST /turn/steer", s.handleSteer)
+	mux.HandleFunc("GET /workspace", s.handleWorkspace)
+	mux.HandleFunc("GET /skills", s.handleSkills)
+	mux.HandleFunc("GET /context", s.handleContext)
+	mux.HandleFunc("GET /diff", s.handleDiff)
+	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
+	mux.HandleFunc("POST /describe", s.handleDescribe)
+	// The A2A surface sits behind the same token as every other call: a
+	// protocol endpoint that runs the agent is not less sensitive for
+	// speaking a standard.
+	mux.Handle(a2aPath, a2asrv.NewJSONRPCHandler(s.a2aHandler()))
+	// Inbound webhooks, as CloudEvents. Behind the token like everything
+	// else: an endpoint that starts an agent run is not public because the
+	// caller is a machine.
+	mux.HandleFunc("POST "+eventsPath, s.handleEvents)
+
+	// A probe holds no token, and a readiness check that answers 401 is a
+	// check that never passes: the kubelet counts only 2xx-3xx as healthy.
+	// So this is served ahead of the token, and says nothing a caller without
+	// one should not learn -- the workspace path stays behind /workspace.
+	root := http.NewServeMux()
+	root.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	root.HandleFunc("GET "+cardPath, s.handleCard)
+	root.Handle("/", s.authenticated(mux))
+	return root
+}
+
+// authenticated refuses anything without the token.
+//
+// Loopback is not a permission: every process on this machine can reach it,
+// and a page in a browser can too. The token is what separates the window
+// that was launched with it from everything else.
+func (s *Server) authenticated(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The window is served from another origin, so it asks first. A
+		// preflight carries no Authorization header — no browser sends one —
+		// and answering it with a 401 stops the real request from ever being
+		// made, which is why this comes before the token is checked.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if s.cfg.Token != "" {
+			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if got != s.cfg.Token {
+				// The caller is a deployment, not a person: a 401 here means
+				// its token was never configured or no longer matches, and
+				// saying so beats a queue that silently never drains. The
+				// token itself is never logged, only whether one was sent.
+				slog.Warn("http: unauthorized",
+					"method", r.Method, "path", r.URL.Path,
+					"token_sent", got != "", "remote", r.RemoteAddr)
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// TurnRequest is one exchange: the history so far, and what to answer.
+//
+// The history comes from the server that holds it. This machine keeps none —
+// it runs a turn and forgets it, which is what lets the same conversation
+// continue on a phone that has no repository at all.
+type TurnRequest struct {
+	// Conversation is the thread this turn belongs to. Empty starts one, and
+	// its id comes back on the first event so the window can carry it.
+	Conversation string `json:"conversation,omitempty"`
+	// Message is what was just asked. Messages is the older form, kept for a
+	// caller that holds the history itself.
+	Message  string    `json:"message,omitempty"`
+	Messages []Message `json:"messages,omitempty"`
+	// Skill names one to work under. Its instructions are prepended to the
+	// turn, exactly as the CLI did, so the window sends a name rather than
+	// carrying a copy of the body it would have to keep in step.
+	Skill    string `json:"skill,omitempty"`
+	System   string `json:"system,omitempty"`
+	MaxSteps int    `json:"max_steps,omitempty"`
+	// DeepResearch is the person's own switch for this turn: only then is
+	// deep_research offered. The agent never starts one on its own.
+	DeepResearch bool `json:"deep_research,omitempty"`
+	// Files are attached to Message and stay readable for the rest of the
+	// conversation.
+	Files []TurnFile `json:"files,omitempty"`
+	// Recall false opens an incognito conversation: nothing remembered from
+	// before, nothing written for later. Read on the first turn only.
+	Recall *bool `json:"recall,omitempty"`
+}
+
+// Message is one turn of the conversation, in the shape the caller stores it.
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Event is what the window renders as the turn unfolds.
+type Event struct {
+	Kind string `json:"kind"`
+	// Step is which model call this is, so the window can say "step 3" while
+	// it waits rather than showing an unqualified spinner.
+	Step int `json:"step,omitempty"`
+	// Reasoning is what a thinking model worked through before answering. It
+	// arrives with the answer and is the window's to show or fold away; a turn
+	// that ends with nothing else said still has this.
+	Reasoning string `json:"reasoning,omitempty"`
+	// Tokens, Threshold and Before carry what an eviction or a compaction
+	// moved, for a window that shows how the history is being kept in size.
+	Tokens    int    `json:"tokens,omitempty"`
+	Threshold int    `json:"threshold,omitempty"`
+	Before    int    `json:"before,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	Args      string `json:"args,omitempty"`
+	Result    string `json:"result,omitempty"`
+	Err       string `json:"error,omitempty"`
+	// Usage arrives once, at the end: the caller records what the turn cost
+	// against the account it belongs to.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is what one turn consumed.
+type Usage struct {
+	InputTokens       int `json:"input_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	Steps             int `json:"steps"`
+	// ToolCalls is how many the turn made, and Session* is what the whole
+	// conversation has cost so far — what the CLI printed under every answer.
+	ToolCalls                int `json:"tool_calls"`
+	SessionInputTokens       int `json:"session_input_tokens"`
+	SessionOutputTokens      int `json:"session_output_tokens"`
+	SessionCachedInputTokens int `json:"session_cached_input_tokens"`
+	// Cost is in euros, and is absent for a model this cannot price rather
+	// than zero — a run that says a real cost is nothing would be worse than
+	// one that says nothing.
+	Cost        *float64 `json:"cost,omitempty"`
+	SessionCost *float64 `json:"session_cost,omitempty"`
+	// Seconds is how long the turn took, as the CLI printed under each answer.
+	Seconds float64 `json:"seconds"`
+}
+
+func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
+	var req TurnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	asked := strings.TrimSpace(req.Message)
+	if asked == "" && len(req.Messages) > 0 {
+		asked = req.Messages[len(req.Messages)-1].Content
+	}
+	question := asked
+	if asked == "" && len(req.Files) > 0 {
+		asked = "(files attached)"
+		question = asked
+	}
+	if asked == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
+		return
+	}
+	attached, err := decodeTurnFiles(req.Files)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// The skill wraps what was just asked, not the history: replaying it over
+	// every past turn would repeat its instructions once per exchange.
+	if name := strings.TrimSpace(req.Skill); name != "" {
+		skill, found := s.skills.Lookup(name)
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("no skill named %q", name),
+			})
+			return
+		}
+		asked = skill.Prompt(asked)
+	}
+
+	id, conv := s.conversation(req)
+	var titleHint string
+	if id != strings.TrimSpace(req.Conversation) {
+		titleHint = firstAsk(req)
+	}
+
+	// What is being worked on opens the conversation as its own turn, the way
+	// the CLI seeds a session. Pasted in front of the first question instead,
+	// it reads as part of it — asked whether it spoke French, the agent went
+	// and oriented itself in the repository first.
+	if len(conv.history) == 0 && !s.assistant() {
+		// A complete exchange, not a bare user turn: two user messages in a
+		// row is a shape some providers reject outright ("no user query found
+		// in messages"), and the acknowledgement is what makes the state read
+		// as something already seen rather than as the question.
+		conv.history = append(conv.history,
+			agent.Message{Role: agent.RoleUser, Content: promptctx.Workspace(s.cfg.Root)},
+			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
+		)
+	}
+	if note := attachedNote(attached); note != "" {
+		asked = strings.TrimSpace(asked + "\n\n" + note)
+	}
+	s.mu.Lock()
+	conv.files = mergeAttachments(conv.files, attached)
+	files := conv.files
+	s.mu.Unlock()
+	asking := agent.Message{Role: agent.RoleUser, Content: asked}
+	conv.history = append(conv.history, asking)
+	if conv.store != nil {
+		// Where the work sits when this turn runs. A session outlives the
+		// branch it opened on — begun on main, moved onto a feature — and
+		// what it passed through is what says where it left off.
+		if branch, err := gitOutput(r.Context(), s.cfg.Root, "branch", "--show-current"); err == nil {
+			_ = conv.store.AppendBranch(strings.TrimSpace(branch))
+		}
+		_ = conv.store.Append(asking)
+	}
+
+	client, err := agent.NewClient(s.cfg.Provider)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	// Tools run on their own goroutines and report through the same writer as
+	// the loop, and the heartbeat below writes from a third.
+	var writing sync.Mutex
+	write := func(frame string) {
+		writing.Lock()
+		defer writing.Unlock()
+		fmt.Fprint(w, frame)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	emit := func(e Event) {
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return
+		}
+		write(fmt.Sprintf("data: %s\n\n", payload))
+	}
+
+	// A step can think for a minute with nothing to say, and a connection that
+	// carries no bytes for that long is one an intermediary — a proxy, or the
+	// engine rendering the window — is free to consider dead. A comment frame
+	// is ignored by every SSE reader and keeps the connection accounted for.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		beat := time.NewTicker(10 * time.Second)
+		defer beat.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			case <-beat.C:
+				write(": keep-alive\n\n")
+			}
+		}
+	}()
+
+	steps := req.MaxSteps
+	if steps == 0 {
+		steps = s.cfg.MaxSteps
+	}
+
+	emit(Event{Kind: "conversation", Text: id})
+	started := time.Now()
+
+	sink := &eventSink{emit: emit}
+	if s.cfg.Recall != nil && !conv.incognito {
+		sink.memory = recall.NewRecorder(r.Context(), s.cfg.Recall, recall.Scope{}, id)
+		sink.memory.Said(uuid.NewString(), "user", question)
+	}
+	var answer, failure string
+	defer func() {
+		if conv.incognito {
+			return
+		}
+		s.journal(r.Context(), JournalEntry{
+			Conversation: id,
+			Turn:         uuid.NewString(),
+			Question:     question,
+			Answer:       answer,
+			TitleHint:    titleHint,
+			ToolCalls:    sink.toolsJournaled(),
+			Err:          failure,
+			At:           time.Now().UTC(),
+		})
+	}()
+	// A nil agent.MemoryRecorder means "extract nothing that outlives this
+	// run" — left nil rather than assigned a *memory.Store that failed to
+	// open, which as a non-nil interface holding a nil pointer would not
+	// compare equal to nil at the point loop.go checks it.
+	var memRecorder agent.MemoryRecorder
+	if !s.assistant() && !conv.incognito {
+		if memStore, err := memory.NewStore(s.cfg.Root); err != nil {
+			slog.Warn("serve: project memory unavailable", "error", err)
+		} else {
+			memRecorder = memStore
+		}
+	}
+	var steered []string
+	s.mu.Lock()
+	conv.running, conv.pending = true, nil
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		conv.running, conv.pending = false, nil
+		s.mu.Unlock()
+	}()
+	steer := func() []string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		added := conv.pending
+		conv.pending = nil
+		steered = append(steered, added...)
+		return added
+	}
+
+	researched := &researchSpend{}
+	runner, err := agent.NewRunner(agent.Config{
+		Client:       client,
+		Redact:       s.redactor.Redact,
+		Tools:        s.withReadAttachment(withoutMemory(s.turnTools(client, req.DeepResearch, researched), conv.incognito), files),
+		Deferred:     deferredWithoutMemory(s.deferredTools(), conv.incognito),
+		Steer:        steer,
+		System:       s.system(req.System, conv.incognito),
+		MaxSteps:     steps,
+		CloseOnBound: true,
+		// Without it the history only grows, and a long conversation ends
+		// against the model's limit rather than being compacted into itself.
+		ContextWindow:  s.cfg.ContextWindow,
+		Stream:         true,
+		Callback:       sink,
+		MemoryRecorder: memRecorder,
+		Logger:         slog.Default().With("conversation_id", id),
+	})
+	if err != nil {
+		failure = err.Error()
+		emit(Event{Kind: "error", Err: err.Error()})
+		return
+	}
+
+	res, err := runner.Run(withAttachments(r.Context(), files), conv.history)
+	if err != nil {
+		failure = err.Error()
+		emit(Event{Kind: "error", Err: err.Error()})
+		return
+	}
+	answer = res.Text
+	res.Usage.Add(researched.total())
+	sink.memory.Said(uuid.NewString(), "assistant", res.Text)
+	s.mu.Lock()
+	for _, text := range steered {
+		added := agent.Message{Role: agent.RoleUser, Content: text}
+		conv.history = append(conv.history, added)
+		if conv.store != nil {
+			_ = conv.store.Append(added)
+		}
+	}
+	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}
+	conv.history = append(conv.history, answered)
+	if conv.store != nil {
+		_ = conv.store.Append(answered)
+		_ = conv.store.AppendUsage(res.Usage, s.cfg.Provider.Model, time.Now())
+	}
+	conv.usage.Input += res.Usage.Input
+	conv.usage.CachedInput += res.Usage.CachedInput
+	conv.usage.Output += res.Usage.Output
+	conv.steps += res.Steps
+	conv.tools += sink.toolCalls
+	session := conv.usage
+	s.mu.Unlock()
+
+	emit(Event{
+		Kind:      "message",
+		Text:      res.Text,
+		Reasoning: res.Reasoning,
+		Usage: &Usage{
+			InputTokens:              res.Usage.Input,
+			CachedInputTokens:        res.Usage.CachedInput,
+			OutputTokens:             res.Usage.Output,
+			Steps:                    res.Steps,
+			ToolCalls:                sink.toolCalls,
+			SessionInputTokens:       session.Input,
+			SessionCachedInputTokens: session.CachedInput,
+			SessionOutputTokens:      session.Output,
+			Cost:                     s.priced(r.Context(), s.cfg.Provider.Model, res.Usage),
+			SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, session),
+			Seconds:                  time.Since(started).Seconds(),
+		},
+	})
+	emit(Event{Kind: "done"})
+}
+
+// system prefixes the caller's instructions with what this machine is.
+//
+// The caller writes the conversation's own prompt and knows nothing about
+// where it runs; the workspace description is what only this side has.
+func (s *Server) system(caller string, incognito bool) string {
+	var b strings.Builder
+	if strings.TrimSpace(caller) != "" {
+		b.WriteString(strings.TrimSpace(caller))
+		b.WriteString("\n\n")
+	}
+	if s.assistant() {
+		b.WriteString(strings.TrimSpace(s.cfg.Instructions))
+		if s.mcpSession != nil {
+			for _, said := range s.mcpSession.Instructions() {
+				b.WriteString("\n\n")
+				b.WriteString(said)
+			}
+		}
+		return strings.TrimSpace(b.String())
+	}
+	// How to work, and then what is being worked on. Without the first the
+	// agent has tools and no idea what is expected of it, and answers a
+	// one-line question with twenty commands; the CLI never ran without it.
+	if base, err := promptctx.System(promptctx.Options{Root: s.cfg.Root, RecentSessions: promptctx.DefaultRecentSessions, NoMemory: incognito}); err == nil {
+		b.WriteString(base)
+		b.WriteString("\n\n")
+	} else {
+		slog.Warn("serve: system prompt unavailable", "error", err)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// handleWorkspace reports what this machine is offering, so a window can say
+// which repository it is pointed at before anything is asked of it.
+// priced converts what a turn used into euros, or nothing when the host
+// gave no Pricer or it has no rate for the model.
+func (s *Server) priced(ctx context.Context, model string, u agent.Usage) *float64 {
+	if s.pricer == nil {
+		return nil
+	}
+	cost, known := s.pricer.Cost(ctx, model, u.Input, u.CachedInput, u.Output)
+	if !known {
+		return nil
+	}
+	return &cost
+}
+
+// conversation finds the thread this turn belongs to, or opens one.
+//
+// A caller that sends its own history — the older form — gets a thread seeded
+// with it, so both callers reach the same runner.
+func (s *Server) conversation(req TurnRequest) (string, *talk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id := strings.TrimSpace(req.Conversation); id != "" {
+		if found, ok := s.talks[id]; ok {
+			return id, found
+		}
+	}
+
+	id := uuid.NewString()
+	opened := &talk{incognito: req.Recall != nil && !*req.Recall}
+	if req.Message == "" && len(req.Messages) > 1 {
+		opened.history = toAgentMessages(req.Messages[:len(req.Messages)-1])
+	}
+	// Written as it goes, so a conversation outlives the window having it.
+	// A store that cannot be opened costs the transcript and nothing else.
+	if opened.incognito {
+		s.talks[id] = opened
+		return id, opened
+	}
+	if store, _, err := session.Create(time.Now(), s.cfg.Root, s.cfg.Provider.Model, firstAsk(req)); err == nil {
+		opened.store = store
+	} else {
+		slog.Warn("serve: session not recorded", "error", err)
+	}
+	s.talks[id] = opened
+	return id, opened
+}
+
+// SteerRequest adds a message to the turn running in a conversation.
+type SteerRequest struct {
+	Conversation string `json:"conversation"`
+	Message      string `json:"message"`
+}
+
+// handleSteer gives the running turn something the person added while it
+// worked: a precision, a correction. It is read before the agent's next
+// step. With no turn running there is nothing to steer, and the caller sends
+// it as a turn of its own.
+func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
+	var req SteerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	text := strings.TrimSpace(req.Message)
+	if text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conv, ok := s.talks[strings.TrimSpace(req.Conversation)]
+	if !ok || !conv.running {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no turn is running in this conversation"})
+		return
+	}
+	conv.pending = append(conv.pending, text)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued for the next step"})
+}
+
+// SessionSummary is an earlier conversation, as a list needs it.
+type SessionSummary struct {
+	ID      string   `json:"id"`
+	Root    string   `json:"root"`
+	Model   string   `json:"model"`
+	Started string   `json:"started"`
+	Prompt  string   `json:"prompt"`
+	Touched []string `json:"touched,omitempty"`
+	// Branches the work passed through, in order; Branch is where it left
+	// off, which is what a list shows and what a pull request is looked up by.
+	Branches []string `json:"branches,omitempty"`
+	Branch   string   `json:"branch,omitempty"`
+	// Pull is what became of that branch, when there is a pull request for
+	// it: open, merged, closed. Absent when there is none, or when nothing
+	// here can ask — no gh, no network, not a GitHub remote.
+	Pull *PullState `json:"pull,omitempty"`
+}
+
+// PullState is a branch's pull request, as a list needs it.
+type PullState struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Title  string `json:"title"`
+}
+
+// pullFor asks gh what became of a branch.
+//
+// Best effort by design: a machine with no gh, no network or a remote that is
+// not GitHub gets a session list without pull requests, which is still the
+// list. Nothing here is worth failing a page over.
+func pullFor(ctx context.Context, root, branch string) *PullState {
+	if branch == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch,
+		"--json", "number,state,title")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var found PullState
+	if json.Unmarshal(out, &found) != nil || found.Number == 0 {
+		return nil
+	}
+	return &found
+}
+
+// handleSessions lists what was said here before, most recent first.
+//
+// Only this workspace's, and only the ones that got as far as a question: a
+// session opened and abandoned has nothing to recognise it by.
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	earlier, err := session.List(40)
+	if err != nil {
+		writeJSON(w, http.StatusOK, []SessionSummary{})
+		return
+	}
+	here := make([]SessionSummary, 0, len(earlier))
+	for _, e := range earlier {
+		if e.Root != s.cfg.Root || strings.TrimSpace(e.Prompt) == "" {
+			continue
+		}
+		summary := SessionSummary{
+			ID:       e.ID,
+			Root:     e.Root,
+			Model:    e.Model,
+			Started:  e.Started.Format(time.RFC3339),
+			Prompt:   e.Prompt,
+			Touched:  e.Touched,
+			Branches: e.Branches,
+		}
+		if n := len(e.Branches); n > 0 {
+			summary.Branch = e.Branches[n-1]
+		}
+		here = append(here, summary)
+	}
+
+	// One gh call per distinct branch, at once: in a row they would be forty
+	// four-second timeouts on a machine with no network, and the list is what
+	// was asked for — the pull requests are what can be added to it.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	asked := map[string]*PullState{}
+	for i := range here {
+		branch := here[i].Branch
+		if branch == "" {
+			continue
+		}
+		mu.Lock()
+		_, already := asked[branch]
+		if !already {
+			asked[branch] = nil
+		}
+		mu.Unlock()
+		if already {
+			continue
+		}
+		wg.Add(1)
+		go func(branch string) {
+			defer wg.Done()
+			found := pullFor(r.Context(), s.cfg.Root, branch)
+			mu.Lock()
+			asked[branch] = found
+			mu.Unlock()
+		}(branch)
+	}
+	wg.Wait()
+	for i := range here {
+		here[i].Pull = asked[here[i].Branch]
+	}
+
+	writeJSON(w, http.StatusOK, here)
+}
+
+// handleResumeSession opens an earlier conversation as a live one, so the
+// next turn continues it rather than starting over.
+func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
+	loaded, err := session.Load(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	id := uuid.NewString()
+	s.mu.Lock()
+	s.talks[id] = &talk{history: loaded.Messages}
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversation": id,
+		"messages":     len(loaded.Messages),
+		"prompt":       loaded.Prompt,
+	})
+}
+
+// DescribeRequest is a pasted image and what to ask about it.
+//
+// A screenshot dropped into a window has no path — it is bytes on a clipboard
+// — so it arrives inline rather than as a filename the read tool could take.
+type DescribeRequest struct {
+	// Image is base64, with or without a data: prefix.
+	Image    string `json:"image"`
+	MimeType string `json:"mime_type,omitempty"`
+	Question string `json:"question,omitempty"`
+}
+
+func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
+	if s.describer == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "no vision model is configured",
+		})
+		return
+	}
+	var req DescribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	encoded := req.Image
+	if i := strings.Index(encoded, ","); strings.HasPrefix(encoded, "data:") && i > 0 {
+		if req.MimeType == "" {
+			req.MimeType = strings.TrimSuffix(strings.TrimPrefix(encoded[:i], "data:"), ";base64")
+		}
+		encoded = encoded[i+1:]
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "the image is not base64"})
+		return
+	}
+
+	byteser, ok := s.describer.(tools.BytesDescriber)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{
+			"error": "this deployment's vision cannot describe a pasted image",
+		})
+		return
+	}
+	described, err := byteser.DescribeBytes(r.Context(), data, req.MimeType, req.Question)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"description": described})
+}
+
+// Diff is what has changed in the workspace since the last commit.
+//
+// The agent edits files, and the only honest account of what a session did is
+// the tree it left behind — not what it said it did.
+type Diff struct {
+	Stat  string `json:"stat"`
+	Patch string `json:"patch"`
+	Clean bool   `json:"clean"`
+}
+
+func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	root := strings.TrimSpace(s.cfg.Root)
+	if root == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "this instance has no workspace"})
+		return
+	}
+	stat, err := gitOutput(r.Context(), root, "diff", "--stat")
+	if err != nil {
+		writeJSON(w, http.StatusOK, Diff{Clean: true})
+		return
+	}
+	patch := ""
+	// The full patch only when there is something to patch: on a large tree
+	// it is megabytes, and the window asked for a summary first.
+	if strings.TrimSpace(stat) != "" {
+		patch, _ = gitOutput(r.Context(), root, "diff")
+	}
+	writeJSON(w, http.StatusOK, Diff{
+		Stat:  stat,
+		Patch: patch,
+		Clean: strings.TrimSpace(stat) == "",
+	})
+}
+
+func gitOutput(ctx context.Context, root string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// ContextView is what the model is actually being sent.
+//
+// Guessing at this is how a prompt bug survives: a window that shows it can
+// see that the system prompt ends where it should, that the history holds the
+// tool results, and how close the conversation is to the limit it will be
+// compacted at.
+type ContextView struct {
+	Model         string       `json:"model"`
+	BaseURL       string       `json:"base_url"`
+	ContextWindow int          `json:"context_window"`
+	System        string       `json:"system"`
+	SystemTokens  int          `json:"system_tokens"`
+	Tools         []string     `json:"tools"`
+	Messages      []ViewedTurn `json:"messages"`
+	HistoryTokens int          `json:"history_tokens"`
+	Usage         Usage        `json:"usage"`
+}
+
+// ViewedTurn is one message as it stands in the history, tool calls included.
+type ViewedTurn struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Tokens    int    `json:"tokens"`
+	ToolName  string `json:"tool_name,omitempty"`
+	ToolCalls int    `json:"tool_calls,omitempty"`
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	view := ContextView{
+		Model:         s.cfg.Provider.Model,
+		BaseURL:       s.cfg.Provider.BaseURL,
+		ContextWindow: s.cfg.ContextWindow,
+		System:        s.system("", false),
+	}
+	view.SystemTokens = agent.EstimateTokens(view.System)
+	for _, tool := range s.tools {
+		view.Tools = append(view.Tools, tool.Name())
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conv, ok := s.talks[strings.TrimSpace(r.URL.Query().Get("conversation"))]
+	if !ok {
+		writeJSON(w, http.StatusOK, view)
+		return
+	}
+	for _, m := range conv.history {
+		turn := ViewedTurn{
+			Role:      string(m.Role),
+			Content:   m.Content,
+			Tokens:    agent.EstimateTokens(m.Content),
+			ToolCalls: len(m.ToolCalls),
+		}
+		if len(m.ToolCalls) == 1 {
+			turn.ToolName = m.ToolCalls[0].Name
+		}
+		view.HistoryTokens += turn.Tokens
+		view.Messages = append(view.Messages, turn)
+	}
+	view.Usage = Usage{
+		InputTokens:              conv.usage.Input,
+		CachedInputTokens:        conv.usage.CachedInput,
+		OutputTokens:             conv.usage.Output,
+		Steps:                    conv.steps,
+		ToolCalls:                conv.tools,
+		SessionInputTokens:       conv.usage.Input,
+		SessionCachedInputTokens: conv.usage.CachedInput,
+		SessionOutputTokens:      conv.usage.Output,
+		SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, conv.usage),
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// firstAsk is what a session is recognised by later: the question it opened
+// with, before any skill wrapped it.
+func firstAsk(req TurnRequest) string {
+	if m := strings.TrimSpace(req.Message); m != "" {
+		return m
+	}
+	if len(req.Messages) > 0 {
+		return strings.TrimSpace(req.Messages[len(req.Messages)-1].Content)
+	}
+	return ""
+}
+
+// SkillSummary is a skill as the window needs it: enough to offer, never the
+// body, which is the agent's business and not something to render.
+type SkillSummary struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (s *Server) handleSkills(w http.ResponseWriter, _ *http.Request) {
+	summaries := make([]SkillSummary, 0, len(s.skills))
+	for _, name := range s.skills.Names() {
+		skill, ok := s.skills.Lookup(name)
+		if !ok {
+			continue
+		}
+		summaries = append(summaries, SkillSummary{Name: skill.Name, Description: skill.Description})
+	}
+	writeJSON(w, http.StatusOK, summaries)
+}
+
+func (s *Server) handleWorkspace(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"root":    s.cfg.Root,
+		"context": promptctx.Workspace(s.cfg.Root),
+	})
+}
+
+func toAgentMessages(in []Message) []agent.Message {
+	out := make([]agent.Message, 0, len(in))
+	for _, m := range in {
+		role := agent.RoleUser
+		switch m.Role {
+		case "assistant":
+			role = agent.RoleAssistant
+		case "system":
+			role = agent.RoleSystem
+		}
+		out = append(out, agent.Message{Role: role, Content: m.Content})
+	}
+	return out
+}
+
+// eventSink turns the agent's callbacks into stream events.
+type eventSink struct {
+	step      int
+	toolCalls int
+	agent.NopCallback
+	emit      func(Event)
+	memory    *recall.Recorder
+	mu        sync.Mutex
+	journaled []JournalToolCall
+}
+
+func (s *eventSink) toolsJournaled() []JournalToolCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]JournalToolCall(nil), s.journaled...)
+}
+
+func (s *eventSink) OnTextDelta(text string) {
+	s.emit(Event{Kind: "delta", Text: text})
+}
+
+func (s *eventSink) OnStepStart(step int) {
+	// The window says "step 3 · thinking" while it waits, as the CLI did: a
+	// spinner that never says what it is doing reads like a hang.
+	s.step = step
+	s.emit(Event{Kind: "step", Step: step})
+}
+
+func (s *eventSink) OnToolStart(name string, args json.RawMessage) {
+	s.mu.Lock()
+	s.toolCalls++
+	s.mu.Unlock()
+	s.emit(Event{Kind: "tool_start", Step: s.step, Tool: name, Args: string(args)})
+}
+
+func (s *eventSink) OnToolEnd(trace agent.ToolCallTrace) {
+	s.memory.OnToolEnd(trace)
+	s.mu.Lock()
+	s.journaled = append(s.journaled, journalToolCall(trace))
+	s.mu.Unlock()
+	result := trace.Result
+	if trace.Err != "" {
+		result = trace.Err
+	}
+	s.emit(Event{Kind: "tool_end", Tool: trace.Name, Args: trace.Arguments, Result: result})
+}
+
+// What the loop does to the history to keep it inside the window: dropping
+// the oldest tool results, then summarising what is left. Both change what
+// the model is answering from, so a window that shows the conversation
+// should be able to say when they happened.
+func (s *eventSink) OnEvict(freedTokens int) {
+	s.emit(Event{Kind: "evict", Step: s.step, Tokens: freedTokens})
+}
+
+func (s *eventSink) OnCompactStart(usedTokens, thresholdTokens int) {
+	s.emit(Event{Kind: "compact_start", Step: s.step, Tokens: usedTokens, Threshold: thresholdTokens})
+}
+
+func (s *eventSink) OnCompactEnd(beforeTokens, afterTokens int) {
+	s.emit(Event{Kind: "compact_end", Step: s.step, Tokens: afterTokens, Before: beforeTokens})
+}
+
+// OnSteer tells the window that what the person added was handed to the
+// model, at which step.
+func (s *eventSink) OnSteer(step int, messages []string) {
+	s.emit(Event{Kind: "steered", Text: strings.Join(messages, "\n")})
+}
+
+func (s *eventSink) OnError(err error) {
+	s.emit(Event{Kind: "error", Err: err.Error()})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}

@@ -1,0 +1,236 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func longHistory(turns int) []Message {
+	msgs := []Message{{Role: RoleUser, Content: "fix the failing test in pkg/foo"}}
+	for i := range turns {
+		msgs = append(msgs,
+			Message{
+				Role:      RoleAssistant,
+				ToolCalls: []ToolCall{{ID: "c", Name: "bash", Arguments: json.RawMessage(`{"command":"go test ./..."}`)}},
+			},
+			Message{Role: RoleTool, ToolCallID: "c", Content: strings.Repeat("output line\n", 20+i)},
+		)
+	}
+	return msgs
+}
+
+func TestSummaryCompactorKeepsTaskAndRecentTurns(t *testing.T) {
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "the summary"}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 4, KeepFirst: 1}
+
+	in := longHistory(10)
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) >= len(in) {
+		t.Fatalf("compaction produced %d messages from %d", len(out), len(in))
+	}
+	if out[0].Content != in[0].Content {
+		t.Fatal("the opening task statement was dropped")
+	}
+	if !strings.Contains(out[1].Content, "the summary") {
+		t.Fatalf("summary is missing: %q", out[1].Content)
+	}
+	if out[len(out)-1].Content != in[len(in)-1].Content {
+		t.Fatal("the most recent turn was not kept verbatim")
+	}
+}
+
+func TestSummaryCompactorLeavesShortHistoryAlone(t *testing.T) {
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "unused"}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 6, KeepFirst: 1}
+
+	in := longHistory(2)
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("short history was compacted: %d -> %d", len(in), len(out))
+	}
+	if len(client.calls) != 0 {
+		t.Fatal("a summarisation call was made for a history that fits")
+	}
+}
+
+func TestSummaryCompactorDropsOrphanToolMessages(t *testing.T) {
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "summary"}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 1, KeepFirst: 1}
+
+	// The kept tail starts on a tool message whose assistant turn is cut.
+	in := []Message{
+		{Role: RoleUser, Content: "task"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "orphan", Name: "bash"}}},
+		{Role: RoleTool, ToolCallID: "orphan", Content: "result"},
+	}
+	out, _, _, err := c.Compact(context.Background(), "sys", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range out {
+		if m.Role == RoleTool {
+			t.Fatalf("an orphan tool message survived: %+v", m)
+		}
+	}
+}
+
+func TestSummaryCompactorFailsWhenModelReturnsNothing(t *testing.T) {
+	client := &scriptedClient{responses: []CompletionResponse{{Text: "   "}, {Text: ""}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 2, KeepFirst: 1}
+	if _, _, _, err := c.Compact(context.Background(), "sys", longHistory(10)); err == nil {
+		t.Fatal("an empty summary was accepted, which would silently erase the history")
+	}
+}
+
+func TestRunCompactsWhenWindowFills(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: strings.Repeat("verbose tool output\n", 400)}
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{
+		looping, looping, looping, looping, {Text: "done"},
+	}}
+	r, err := NewRunner(Config{
+		Client:        client,
+		Tools:         []Tool{tool},
+		MaxSteps:      6,
+		ContextWindow: 2000,
+		Compactor:     &stubCompactor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Compactions == 0 {
+		t.Fatal("history grew past the window without compacting")
+	}
+}
+
+func TestRunDoesNotCompactWithoutContextWindow(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: strings.Repeat("noise\n", 500)}
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{looping, looping, {Text: "done"}}}
+	r, err := NewRunner(Config{Client: client, Tools: []Tool{tool}, MaxSteps: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Compactions != 0 {
+		t.Fatal("compaction ran with no context window configured")
+	}
+}
+
+func TestRunSurvivesCompactionFailure(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: strings.Repeat("noise\n", 400)}
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{looping, looping, {Text: "done"}}}
+	r, err := NewRunner(Config{
+		Client:        client,
+		Tools:         []Tool{tool},
+		MaxSteps:      4,
+		ContextWindow: 1000,
+		Compactor:     failingCompactor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatalf("a failed compaction aborted the run: %v", err)
+	}
+	if res.Text != "done" {
+		t.Fatalf("Text = %q, want the run to have completed", res.Text)
+	}
+}
+
+// stubCompactUsage is what the stub reports the summarisation itself cost, so
+// a test can tell an accounted compaction from an ignored one.
+var stubCompactUsage = Usage{Input: 500, Output: 50}
+
+type stubCompactor struct{}
+
+func (stubCompactor) Compact(_ context.Context, _ string, messages []Message) ([]Message, *MemoryExtraction, Usage, error) {
+	if len(messages) <= 2 {
+		return messages, nil, Usage{}, nil
+	}
+	return []Message{messages[0], {Role: RoleUser, Content: "[compacted]"}}, nil, stubCompactUsage, nil
+}
+
+type failingCompactor struct{}
+
+func (failingCompactor) Compact(context.Context, string, []Message) ([]Message, *MemoryExtraction, Usage, error) {
+	return nil, nil, Usage{}, context.DeadlineExceeded
+}
+
+// Compacting is itself a model call, on the whole stretch being summarised.
+// Leaving its tokens out of the run's Usage understates exactly the long
+// conversations that cost the most — and the provider still bills them.
+func TestRunAccountsForWhatCompactionItselfSpent(t *testing.T) {
+	tool := &fakeTool{name: "probe", result: strings.Repeat("noise\n", 500)}
+	looping := CompletionResponse{ToolCalls: []ToolCall{{ID: "c", Name: "probe", Arguments: json.RawMessage(`{}`)}}}
+	client := &scriptedClient{responses: []CompletionResponse{looping, looping, looping, {Text: "done"}}}
+	r, err := NewRunner(Config{
+		Client:        client,
+		Tools:         []Tool{tool},
+		MaxSteps:      6,
+		StallAfter:    -1,
+		ContextWindow: 2000,
+		Compactor:     &stubCompactor{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Run(context.Background(), []Message{{Role: RoleUser, Content: "go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Compactions == 0 {
+		t.Fatal("history grew past the window without compacting")
+	}
+	wantInput := stubCompactUsage.Input * res.Compactions
+	if res.Usage.Input < wantInput {
+		t.Errorf("usage.Input = %d, want at least %d from %d compaction(s)",
+			res.Usage.Input, wantInput, res.Compactions)
+	}
+}
+
+func TestSummaryCompactorRetriesWithoutToolsWhenModelOnlyRecordsMemory(t *testing.T) {
+	memoryOnly := CompletionResponse{
+		ToolCalls: []ToolCall{{ID: "m", Name: "record_memory", Arguments: json.RawMessage(`{"facts":["the API is on port 4100"]}`)}},
+		Usage:     Usage{Input: 100, Output: 40},
+	}
+	client := &scriptedClient{responses: []CompletionResponse{memoryOnly, {Text: "the summary", Usage: Usage{Input: 100, Output: 10}}}}
+	c := &SummaryCompactor{Client: client, KeepRecent: 2, KeepFirst: 1}
+	out, mem, usage, err := c.Compact(context.Background(), "sys", longHistory(10))
+	if err != nil {
+		t.Fatalf("a memory-only answer failed the compaction: %v", err)
+	}
+	if len(client.calls) != 2 || len(client.calls[1].Tools) != 0 {
+		t.Fatalf("want one retry offering no tool, got %d calls", len(client.calls))
+	}
+	if mem == nil {
+		t.Fatal("the memory recorded by the first answer was dropped")
+	}
+	if usage.Output != 50 {
+		t.Fatalf("Usage.Output = %d, want both calls accounted", usage.Output)
+	}
+	var found bool
+	for _, m := range out {
+		found = found || strings.Contains(m.Content, "the summary")
+	}
+	if !found {
+		t.Fatal("the retried summary is missing from the compacted history")
+	}
+}
