@@ -15,12 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/connectors/cluster"
-	lalterrecall "github.com/lalternative/packages/go/cortex/connectors/recall/lalter"
-	"github.com/lalternative/packages/go/cortex/host"
-	"github.com/lalternative/packages/go/cortex/mcp"
-	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/connectors/cluster"
+	lalterrecall "github.com/lalternativefabrique/cortex/connectors/recall/lalter"
+	"github.com/lalternativefabrique/cortex/host"
+	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/recall"
 	"github.com/lalternative/packages/go/svcauth"
 )
 

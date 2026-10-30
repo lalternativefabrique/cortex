@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // GlobConfig configures the glob tool.

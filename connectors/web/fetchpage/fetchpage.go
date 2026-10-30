@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 
 	"github.com/lalternativefabrique/searchkit/search/fetch"
 	tornad "github.com/lalternative/packages/tornad/sdk-go"

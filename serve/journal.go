@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 const journalTimeout = 10 * time.Second

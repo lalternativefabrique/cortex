@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 func write(t *testing.T, path, body string) {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // Handler is an MCP server that lives in the host's own process.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // The first retries are quick, an agent and its app often start together;

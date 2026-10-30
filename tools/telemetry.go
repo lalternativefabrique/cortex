@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // TelemetryConfig points a task at the evidence its repair is about.

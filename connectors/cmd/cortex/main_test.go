@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/host"
-	"github.com/lalternative/packages/go/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/host"
+	"github.com/lalternativefabrique/cortex/mcp"
 )
 
 func TestMCPServersFromEnvReadsNamedURLs(t *testing.T) {

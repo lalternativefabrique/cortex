@@ -16,8 +16,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // Agent is where a turn is sent. URL is the agent's A2A base, /a2a is

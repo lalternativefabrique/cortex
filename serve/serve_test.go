@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func newServer(t *testing.T, token string) http.Handler {

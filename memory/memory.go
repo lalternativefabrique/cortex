@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // ProjectKey identifies a project across clones and worktrees, so a feature

@@ -18,7 +18,7 @@ package websearch
 import (
 	"context"
 	"fmt"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 	"net/http"
 	"strings"
 	"time"

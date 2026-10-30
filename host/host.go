@@ -16,10 +16,10 @@ import (
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/mcp"
-	"github.com/lalternative/packages/go/cortex/recall"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/recall"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 // Metadata keys a caller sets on its A2A message. Only a caller holding the

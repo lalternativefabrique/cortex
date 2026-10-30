@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/sandbox"
+	"github.com/lalternativefabrique/cortex/sandbox"
 )
 
 func TestBashReportsStdoutAndExitCode(t *testing.T) {

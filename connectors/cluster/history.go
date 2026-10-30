@@ -9,8 +9,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // maxHistoryBytes keeps one conversation under JetStream's default message

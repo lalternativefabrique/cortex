@@ -21,7 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 const (

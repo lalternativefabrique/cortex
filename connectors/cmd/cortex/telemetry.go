@@ -10,7 +10,7 @@ import (
 
 	skalpai "github.com/lalternative/packages/skalpai/sdk-go"
 
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // telemetry sends the container's logs, traces and metrics to skalpai when

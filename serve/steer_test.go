@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func sse(w http.ResponseWriter, text string) {

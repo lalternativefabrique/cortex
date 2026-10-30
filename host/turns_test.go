@@ -12,7 +12,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/a2a"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func turnOf(contextID string) Turn {

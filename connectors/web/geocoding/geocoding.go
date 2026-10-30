@@ -13,7 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 	"net/http"
 	"net/url"
 	"strconv"

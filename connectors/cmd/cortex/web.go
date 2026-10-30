@@ -5,10 +5,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/connectors/web/fetchpage"
-	"github.com/lalternative/packages/go/cortex/connectors/web/websearch"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/connectors/web/fetchpage"
+	"github.com/lalternativefabrique/cortex/connectors/web/websearch"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 // webToolsFromEnv gives the agent web_search and fetch_url, served by the

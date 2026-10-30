@@ -7,8 +7,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/a2a"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 // TurnInfo is who a turn runs for and what it was asked with, for the hooks

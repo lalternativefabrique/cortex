@@ -16,7 +16,7 @@ package mappy
 import (
 	"context"
 	"encoding/json"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 	"regexp"
 	"strings"
 	"time"

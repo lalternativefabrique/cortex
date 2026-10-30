@@ -26,15 +26,15 @@ import (
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/google/uuid"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/mcp"
-	"github.com/lalternative/packages/go/cortex/memory"
-	"github.com/lalternative/packages/go/cortex/promptctx"
-	"github.com/lalternative/packages/go/cortex/recall"
-	"github.com/lalternative/packages/go/cortex/sandbox"
-	"github.com/lalternative/packages/go/cortex/session"
-	"github.com/lalternative/packages/go/cortex/skills"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/memory"
+	"github.com/lalternativefabrique/cortex/promptctx"
+	"github.com/lalternativefabrique/cortex/recall"
+	"github.com/lalternativefabrique/cortex/sandbox"
+	"github.com/lalternativefabrique/cortex/session"
+	"github.com/lalternativefabrique/cortex/skills"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 // Config parameterises the local server.

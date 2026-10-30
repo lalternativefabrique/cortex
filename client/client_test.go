@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // model answers the first request with a call to tool (or text when tool is

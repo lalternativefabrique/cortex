@@ -12,8 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/lalternative/packages/go/cortex/connectors/cluster"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/connectors/cluster"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 const defaultHistoryTTL = 7 * 24 * time.Hour

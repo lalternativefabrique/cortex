@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 
 	tornad "github.com/lalternative/packages/tornad/sdk-go"
 )

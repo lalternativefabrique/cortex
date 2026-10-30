@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func TestATurnStopsWhenItsCallerLeaves(t *testing.T) {

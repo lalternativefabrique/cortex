@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // EditConfig configures the edit tool.

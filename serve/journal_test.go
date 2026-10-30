@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 type journalFunc func(context.Context, JournalEntry) error

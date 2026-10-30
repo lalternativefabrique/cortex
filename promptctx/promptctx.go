@@ -16,8 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/memory"
-	"github.com/lalternative/packages/go/cortex/session"
+	"github.com/lalternativefabrique/cortex/memory"
+	"github.com/lalternativefabrique/cortex/session"
 )
 
 //go:embed system.md

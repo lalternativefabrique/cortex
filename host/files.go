@@ -9,8 +9,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/a2a"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 // File is a file part of the message a turn answers: its bytes when the

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 func TestFetchReadsThroughTornad(t *testing.T) {

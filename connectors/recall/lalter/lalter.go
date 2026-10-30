@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternativefabrique/cortex/recall"
 )
 
 const endUserHeader = "X-End-User-Id"

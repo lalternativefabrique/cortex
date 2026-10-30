@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // maxConversations bounds what one container keeps in memory; the least

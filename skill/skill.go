@@ -12,9 +12,9 @@ import (
 	"os"
 	"reflect"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/client"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/client"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 // Spec describes a skill. In is what the app sends, Out what it gets back;

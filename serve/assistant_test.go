@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/mcp"
 )
 
 func TestAnAssistantGetsLightFileToolsAndNoShell(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func isolate(t *testing.T) string {

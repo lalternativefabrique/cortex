@@ -8,7 +8,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/a2a"
 
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 func TestALongAnswerReachesASlowCallerWhole(t *testing.T) {

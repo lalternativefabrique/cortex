@@ -14,9 +14,9 @@ import (
 	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
 	"github.com/google/uuid"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/mcp"
-	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/recall"
 )
 
 // executor answers one A2A task as one turn of the agent. The answer is one

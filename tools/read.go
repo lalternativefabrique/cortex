@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 // ReadConfig configures the read tool.

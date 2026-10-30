@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/recall"
 )
 
 type keptMemories struct {

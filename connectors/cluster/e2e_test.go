@@ -15,8 +15,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 func streamingModel(t *testing.T, hits *atomic.Int32, bodies *[]string, mu *sync.Mutex) agent.Provider {

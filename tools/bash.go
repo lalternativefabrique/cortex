@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/sandbox"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/sandbox"
 )
 
 // BashConfig configures the bash tool.

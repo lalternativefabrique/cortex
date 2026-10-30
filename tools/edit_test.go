@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 func writeTemp(t *testing.T, root, name, content string) string {

@@ -3,7 +3,7 @@ package serve
 import (
 	"strings"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 var memoryTools = []string{"recall_memory", "recent_activity"}

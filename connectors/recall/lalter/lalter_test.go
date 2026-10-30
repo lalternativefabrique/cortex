@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/recall"
+	"github.com/lalternativefabrique/cortex/recall"
 )
 
 type seen struct {

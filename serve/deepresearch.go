@@ -4,8 +4,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/tools"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/tools"
 )
 
 var webTools = []string{"web_search", "fetch_url", "research", "explore_site"}

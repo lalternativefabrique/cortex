@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/host"
+	"github.com/lalternativefabrique/cortex/host"
 )
 
 func fakeLentToken(t *testing.T, claims map[string]any) string {

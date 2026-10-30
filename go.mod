@@ -1,4 +1,4 @@
-module github.com/lalternative/packages/go/cortex
+module github.com/lalternativefabrique/cortex
 
 go 1.26.6
 

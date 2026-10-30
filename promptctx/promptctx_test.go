@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lalternative/packages/go/cortex/agent"
-	"github.com/lalternative/packages/go/cortex/memory"
-	"github.com/lalternative/packages/go/cortex/session"
+	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/memory"
+	"github.com/lalternativefabrique/cortex/session"
 )
 
 func fixedTime(t *testing.T) time.Time {

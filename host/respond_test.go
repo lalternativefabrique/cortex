@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lalternative/packages/go/cortex/agent"
+	"github.com/lalternativefabrique/cortex/agent"
 )
 
 type scriptedReply struct {
