@@ -229,6 +229,10 @@ type GatedApprover struct {
 	// an empty, non-nil slice takes none.
 	Dangerous []string
 	AlwaysAsk []string
+	// Commands, when non-nil, is the only commands that may run, as prefixes:
+	// any other is refused in every mode, an opaque one included. Empty
+	// refuses every command.
+	Commands []string
 	// Ask is consulted when neither the mode nor a rule settles the request.
 	// Nil means deny: nobody can answer.
 	Ask Approver
@@ -257,6 +261,9 @@ func (g *GatedApprover) Approve(ctx context.Context, req Request) (Decision, err
 		return Deny, RefusedProtected
 	}
 	if g.isDenied(req) {
+		return Deny, RefusedByRule
+	}
+	if req.Tool == "bash" && !g.commandListed(req.Action) {
 		return Deny, RefusedByRule
 	}
 	// A read is never prompted: a deny rule is the only thing that stops one.
@@ -305,6 +312,21 @@ func (g *GatedApprover) isDenied(req Request) bool {
 		}
 	}
 	return false
+}
+
+func (g *GatedApprover) commandListed(line string) bool {
+	if g.Commands == nil {
+		return true
+	}
+	if isOpaque(line) {
+		return false
+	}
+	for _, stage := range splitStages(line) {
+		if stage = normalizeCommand(stage); stage != "" && !matchesAnyPrefix(stage, g.Commands) {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *GatedApprover) mustAsk(req Request) bool {

@@ -277,3 +277,45 @@ func TestReadHonoursADenyRule(t *testing.T) {
 		t.Fatalf("a denied read answered: %+v", res)
 	}
 }
+
+func TestOnlyListedCommandsRunEvenUnderYes(t *testing.T) {
+	g := &GatedApprover{Mode: ModeYes, Commands: []string{"go test", "git status"}}
+	for line, want := range map[string]Decision{
+		"go test ./...":               Allow,
+		"go test ./... && git status": Allow,
+		"go build ./...":              Deny,
+		"go test ./... && curl x":     Deny,
+		"rm -r -f /":                  Deny,
+		"sh -c 'go test'":             Deny,
+		"go test $(rm x)":             Deny,
+	} {
+		d, _ := g.Approve(t.Context(), Request{Tool: "bash", Action: line})
+		if d != want {
+			t.Errorf("%q: got %v, want %v", line, d, want)
+		}
+	}
+}
+
+func TestAnEmptyCommandListRefusesEveryCommand(t *testing.T) {
+	g := &GatedApprover{Mode: ModeYes, Commands: []string{}}
+	if d, _ := g.Approve(t.Context(), Request{Tool: "bash", Action: "ls"}); d != Deny {
+		t.Fatalf("got %v", d)
+	}
+}
+
+func TestReadOnlyDetectionRefusesCommandsThatWriteOrRun(t *testing.T) {
+	for _, line := range []string{
+		"env rm x", "awk 'BEGIN{system(\"rm x\")}'", "sed -n 'w out' f",
+		"sort -o out f", "sort -oout f", "git diff --output=out", "rg --pre ./x y",
+		"git branch -D main", "git remote add x y", "find . -fprintf out x",
+	} {
+		if isReadOnlyCommand(line) {
+			t.Errorf("%q passed as read-only", line)
+		}
+	}
+	for _, line := range []string{"grep -o x f", "ls -d .", "git branch", "git branch -a", "sort f", "git remote -v"} {
+		if !isReadOnlyCommand(line) {
+			t.Errorf("%q no longer passes as read-only", line)
+		}
+	}
+}
