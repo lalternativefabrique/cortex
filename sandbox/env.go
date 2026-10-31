@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -16,7 +17,15 @@ var DefaultInherit = []string{
 	"CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
 	"PNPM_HOME", "NVM_DIR", "VOLTA_HOME", "NODE_PATH",
 	"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV",
+	"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "OS",
+	"USERNAME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+	"ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+	"NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
 }
+
+// Windows treats variable names as case-insensitive and commonly spells
+// PATH as "Path".
+var foldEnvNames = runtime.GOOS == "windows"
 
 // Inherited filters environ down to the names allow lists, plus extra.
 func Inherited(environ, allow, extra []string) []string {
@@ -25,13 +34,23 @@ func Inherited(environ, allow, extra []string) []string {
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
 		for _, n := range names {
-			if prefix, ok := strings.CutSuffix(n, "*"); ok && strings.HasPrefix(name, prefix) || name == n {
+			if nameMatches(name, n) {
 				out = append(out, kv)
 				break
 			}
 		}
 	}
 	return out
+}
+
+func nameMatches(name, pattern string) bool {
+	if foldEnvNames {
+		name, pattern = strings.ToUpper(name), strings.ToUpper(pattern)
+	}
+	if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+		return strings.HasPrefix(name, prefix)
+	}
+	return name == pattern
 }
 
 func (d *Direct) environ() []string {

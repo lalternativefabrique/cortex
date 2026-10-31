@@ -27,3 +27,24 @@ func TestDirectKeepsWhatToolsNeedAndDropsCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestInheritedKeepsWindowsEssentials(t *testing.T) {
+	got := Inherited([]string{"SystemRoot=C:\\Windows", "APPDATA=x", "API_TOKEN=secret"}, DefaultInherit, nil)
+	if len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestInheritedFoldsNamesOnlyWhenTheSystemDoes(t *testing.T) {
+	environ := []string{"Path=C:\\bin", "lc_all=C"}
+
+	if got := Inherited(environ, []string{"PATH", "LC_*"}, nil); len(got) != 0 {
+		t.Fatalf("case-sensitive match kept %v", got)
+	}
+
+	foldEnvNames = true
+	t.Cleanup(func() { foldEnvNames = false })
+	if got := Inherited(environ, []string{"PATH", "LC_*"}, nil); len(got) != 2 {
+		t.Fatalf("case-insensitive match kept %v", got)
+	}
+}
