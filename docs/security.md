@@ -38,7 +38,7 @@ Use `Space` or your own `sandbox` implementation for untrusted input.
 
 ## MCP
 
-MCP servers are trusted code. There is no allowlist; descriptions and schemas they publish reach the model; stdio servers inherit the full environment; `LoadConfig` merges a repository's `.ai/mcp.yaml` with user config, so opening an untrusted repository can add servers. On `host`, MCP tools are gated only if an `Approver` is set.
+MCP servers are trusted code; the descriptions and schemas they publish reach the model. `ServerConfig.Tools` limits a server to named tools, and nil offers them all. Stdio servers keep `sandbox.DefaultInherit`, plus the names in `Inherit` and the values in `Env`. `LoadConfig` reads a repository's `.ai/mcp.yaml` only when its `trustRepo` argument is true. On `host`, MCP tools are gated only if an `Approver` is set.
 
 Per-turn `mcpHeaders` reach MCP calls and never the model.
 

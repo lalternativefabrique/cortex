@@ -39,6 +39,9 @@ type ServerConfig struct {
 	Command string            `yaml:"command" json:"command"`
 	Args    []string          `yaml:"args" json:"args"`
 	Env     map[string]string `yaml:"env" json:"env"`
+	// Inherit names what a local server keeps of the process environment
+	// beyond sandbox.DefaultInherit. A name ending in "*" matches a prefix.
+	Inherit []string `yaml:"inherit" json:"inherit"`
 
 	// URL reaches a remote server over HTTP: one POST per JSON-RPC call,
 	// stateless (see synthiz's apps/core/mcpserver). Empty for a local
@@ -52,6 +55,10 @@ type ServerConfig struct {
 	// inject a fixed secret into every call would defeat the point of a
 	// grant that expires in five minutes.
 	URL string `yaml:"url" json:"url"`
+
+	// Tools limits the server's tools to these unprefixed names. Nil offers
+	// all of them; empty offers none.
+	Tools []string `yaml:"tools" json:"tools"`
 
 	// Timeout caps a single request. Zero means DefaultRequestTimeout.
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
@@ -116,6 +123,7 @@ type cfg struct {
 	name     string
 	timeout  time.Duration
 	deferred bool
+	tools    []string
 }
 
 // Connect reaches the server — spawning it for a local (Command) config,
@@ -143,7 +151,7 @@ func Connect(ctx context.Context, sc ServerConfig) (*Client, error) {
 		return nil, err
 	}
 
-	c := &Client{cfg: cfg{name: sc.Name, timeout: sc.Timeout, deferred: sc.Deferred}, t: t}
+	c := &Client{cfg: cfg{name: sc.Name, timeout: sc.Timeout, deferred: sc.Deferred, tools: sc.Tools}, t: t}
 	if err := c.handshake(ctx); err != nil {
 		c.Close()
 		return nil, err
