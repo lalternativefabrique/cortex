@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/lalternativefabrique/cortex/agent"
@@ -49,6 +50,9 @@ func (c *Client) ListTools(ctx context.Context) ([]agent.Tool, error) {
 
 	out := make([]agent.Tool, 0, len(result.Tools))
 	for _, d := range result.Tools {
+		if c.cfg.tools != nil && !slices.Contains(c.cfg.tools, d.Name) {
+			continue
+		}
 		out = append(out, &remoteTool{client: c, descriptor: d})
 	}
 	return out, nil

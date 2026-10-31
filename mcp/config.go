@@ -15,12 +15,12 @@ type Config struct {
 	Servers []ServerConfig `yaml:"servers"`
 }
 
-// LoadConfig reads the user's server list, then the workspace's, and merges
-// them. A repository may add servers its own work needs without the operator
-// having to declare them globally.
+// LoadConfig reads the user's server list and, when trustRepo is set, merges
+// the workspace's. A repository's list launches commands, so opening an
+// untrusted one must not read it.
 //
 // Both files are optional.
-func LoadConfig(root string) (Config, error) {
+func LoadConfig(root string, trustRepo bool) (Config, error) {
 	var merged Config
 
 	if path, err := userConfigPath(); err == nil {
@@ -31,6 +31,9 @@ func LoadConfig(root string) (Config, error) {
 		merged.Servers = append(merged.Servers, c.Servers...)
 	}
 
+	if !trustRepo {
+		return merged, nil
+	}
 	repo, err := readConfig(filepath.Join(root, ".ai", "mcp.yaml"))
 	if err != nil {
 		return merged, err

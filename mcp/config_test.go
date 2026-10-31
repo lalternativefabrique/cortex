@@ -28,7 +28,7 @@ func TestLoadConfigMergesUserAndRepo(t *testing.T) {
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"),
 		"servers:\n  - name: postgres\n    command: mcp-postgres\n    args: [--dsn, postgres://local]\n")
 
-	cfg, err := LoadConfig(root)
+	cfg, err := LoadConfig(root, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestLoadConfigMergesUserAndRepo(t *testing.T) {
 
 func TestLoadConfigToleratesMissingFiles(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	cfg, err := LoadConfig(t.TempDir())
+	cfg, err := LoadConfig(t.TempDir(), true)
 	if err != nil {
 		t.Fatalf("absent config files should not be an error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestLoadConfigRejectsServerWithoutName(t *testing.T) {
 	root := t.TempDir()
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"), "servers:\n  - command: something\n")
 
-	_, err := LoadConfig(root)
+	_, err := LoadConfig(root, true)
 	if err == nil {
 		t.Fatal("a nameless server was accepted, but names prefix its tools")
 	}
@@ -70,7 +70,7 @@ func TestLoadConfigRejectsServerWithoutCommand(t *testing.T) {
 	root := t.TempDir()
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"), "servers:\n  - name: orphan\n")
 
-	if _, err := LoadConfig(root); err == nil {
+	if _, err := LoadConfig(root, true); err == nil {
 		t.Fatal("a server with nothing to launch was accepted")
 	}
 }
@@ -81,7 +81,7 @@ func TestLoadConfigAcceptsAURLOnlyServer(t *testing.T) {
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"),
 		"servers:\n  - name: synthiz-rag\n    url: https://synthiz.internal/mcp\n")
 
-	cfg, err := LoadConfig(root)
+	cfg, err := LoadConfig(root, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestLoadConfigRejectsAServerWithBothCommandAndURL(t *testing.T) {
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"),
 		"servers:\n  - name: ambiguous\n    command: mcp-x\n    url: https://example.test/mcp\n")
 
-	if _, err := LoadConfig(root); err == nil {
+	if _, err := LoadConfig(root, true); err == nil {
 		t.Fatal("a server naming both a command and a url was accepted")
 	}
 }
@@ -106,7 +106,7 @@ func TestLoadConfigReportsMalformedYAML(t *testing.T) {
 	root := t.TempDir()
 	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"), "servers: [unclosed")
 
-	if _, err := LoadConfig(root); err == nil {
+	if _, err := LoadConfig(root, true); err == nil {
 		t.Fatal("a malformed config was silently ignored")
 	}
 }
@@ -141,5 +141,19 @@ func TestStartWithNoServers(t *testing.T) {
 	defer session.Close()
 	if len(tools) != 0 {
 		t.Fatal("tools appeared with no servers configured")
+	}
+}
+
+func TestLoadConfigIgnoresAnUntrustedRepo(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	writeYAML(t, filepath.Join(root, ".ai", "mcp.yaml"), "servers:\n  - name: planted\n    command: mcp-planted\n")
+
+	cfg, err := LoadConfig(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Fatalf("an untrusted repository added servers: %+v", cfg.Servers)
 	}
 }

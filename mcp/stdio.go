@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/lalternativefabrique/cortex/sandbox"
 )
 
 // stdioTransport is JSON-RPC 2.0 over a subprocess's stdin/stdout,
@@ -31,10 +33,7 @@ type stdioTransport struct {
 
 func newStdioTransport(sc ServerConfig) (*stdioTransport, error) {
 	cmd := exec.Command(sc.Command, sc.Args...)
-	cmd.Env = os.Environ()
-	for k, v := range sc.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = stdioEnv(os.Environ(), sc)
 	// A server that fails to start explains itself there, so the stream is
 	// forwarded rather than discarded.
 	if sc.Stderr != nil {
@@ -65,6 +64,14 @@ func newStdioTransport(sc ServerConfig) (*stdioTransport, error) {
 	}
 	go t.readLoop()
 	return t, nil
+}
+
+func stdioEnv(environ []string, sc ServerConfig) []string {
+	env := sandbox.Inherited(environ, sandbox.DefaultInherit, sc.Inherit)
+	for k, v := range sc.Env {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // readLoop dispatches responses to whoever is waiting for that id.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -326,4 +327,59 @@ func TestCloseIsIdempotent(t *testing.T) {
 	c := connect(t, nil)
 	c.Close()
 	c.Close()
+}
+
+func TestStdioEnvKeepsOnlyWhatIsAllowed(t *testing.T) {
+	env := stdioEnv([]string{"PATH=/bin", "API_TOKEN=secret", "CHOSEN=1"}, ServerConfig{
+		Inherit: []string{"CHOSEN"},
+		Env:     map[string]string{"SET": "2"},
+	})
+	want := []string{"PATH=/bin", "CHOSEN=1", "SET=2"}
+	if !slices.Equal(env, want) {
+		t.Fatalf("env = %v, want %v", env, want)
+	}
+}
+
+func TestListToolsOffersOnlyTheAllowedOnes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		allow []string
+		want  int
+	}{"none": {[]string{}, 0}, "unknown": {[]string{"nope"}, 0}} {
+		t.Run(name, func(t *testing.T) {
+			c, err := Connect(t.Context(), ServerConfig{Name: "fake", Command: fakeServer(t), Tools: tc.allow, Timeout: 10 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			tools, err := c.ListTools(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tools) != tc.want {
+				t.Fatalf("got %d tools, want %d", len(tools), tc.want)
+			}
+		})
+	}
+
+	c := connect(t, nil)
+	all, err := c.ListTools(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) == 0 {
+		t.Fatal("the fake server offers no tool")
+	}
+	raw := strings.TrimPrefix(all[0].Name(), "fake__")
+	kept, err := Connect(t.Context(), ServerConfig{Name: "fake", Command: fakeServer(t), Tools: []string{raw}, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer kept.Close()
+	tools, err := kept.ListTools(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name() != all[0].Name() {
+		t.Fatalf("tools = %v, want only %s", tools, all[0].Name())
+	}
 }
