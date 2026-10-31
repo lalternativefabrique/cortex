@@ -77,3 +77,29 @@ func TestTheApproverEnforcesWhatTheFilesSay(t *testing.T) {
 		t.Fatal("the deny rule did not hold under mode yes")
 	}
 }
+
+func TestARepositoryNarrowsTheCommandListButNeverWidensIt(t *testing.T) {
+	cfg, root := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	write(t, filepath.Join(cfg, "ark", "settings.yaml"), "permissions:\n  commands: [\"go test\", \"git status\"]\n")
+	write(t, filepath.Join(root, ".ai", "settings.yaml"), "permissions:\n  commands: [\"go test\", \"curl\"]\n")
+
+	s, err := Load("ark", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Commands) != 1 || s.Commands[0] != "go test" {
+		t.Fatalf("commands = %v", s.Commands)
+	}
+}
+
+func TestNoListLeavesCommandsUnrestricted(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	s, err := Load("ark", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Commands != nil {
+		t.Fatalf("commands = %v", s.Commands)
+	}
+}

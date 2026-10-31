@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -27,6 +28,8 @@ type File struct {
 		Allow []string `yaml:"allow,omitempty"`
 		Ask   []string `yaml:"ask,omitempty"`
 		Deny  []string `yaml:"deny,omitempty"`
+		// Commands is tools.GatedApprover.Commands.
+		Commands []string `yaml:"commands"`
 	} `yaml:"permissions,omitempty"`
 	Hooks struct {
 		PreToolUse []tools.Hook `yaml:"pre_tool_use,omitempty"`
@@ -47,6 +50,10 @@ type Settings struct {
 	Ask        []Rule
 	Deny       []Rule
 	PreToolUse []tools.Hook
+	// Commands is what every file listing commands agrees on: a repository's
+	// settings can narrow the person's list, never widen it. Nil when no file
+	// lists any.
+	Commands []string
 	// Files lists the files that were found, in the order they were read.
 	Files []string
 }
@@ -127,7 +134,24 @@ func (s *Settings) add(f File, origin string) error {
 		return err
 	}
 	s.PreToolUse = append(s.PreToolUse, f.Hooks.PreToolUse...)
+	s.Commands = narrowed(s.Commands, f.Permissions.Commands)
 	return nil
+}
+
+func narrowed(current, listed []string) []string {
+	if listed == nil {
+		return current
+	}
+	if current == nil {
+		return listed
+	}
+	kept := []string{}
+	for _, c := range current {
+		if slices.Contains(listed, c) {
+			kept = append(kept, c)
+		}
+	}
+	return kept
 }
 
 func appendRules(to []Rule, lines []string, origin string) ([]Rule, error) {
@@ -157,5 +181,5 @@ func bare(rules []Rule) []tools.Rule {
 // Approver builds the workstation gate these settings describe: hooks first,
 // then the mode and the rules, then ask.
 func (s Settings) Approver(root string, ask tools.Approver) tools.Approver {
-	return tools.WithHooks(&tools.GatedApprover{Mode: s.Mode, Rules: s.Rules(), Root: root, Ask: ask}, s.PreToolUse, root)
+	return tools.WithHooks(&tools.GatedApprover{Mode: s.Mode, Rules: s.Rules(), Commands: s.Commands, Root: root, Ask: ask}, s.PreToolUse, root)
 }

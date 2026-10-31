@@ -19,6 +19,8 @@ An agent executes what a model decides, so treat its input as untrusted. Cortex 
 
 Read-only detection is a prefix allowlist, not a shell parser.
 
+`GatedApprover.Commands` is the boundary to use for commands: when non-nil, only the listed prefixes run, in every mode, each chained stage is checked, and an opaque command is refused. `Dangerous` is a backstop against accidents, not a boundary.
+
 `PDPApprover` delegates to an AuthZEN-shaped policy decision point, with resource types `<product>:command`, `:tool` and `:path`. Cortex ships no policy engine.
 
 ## Protected paths

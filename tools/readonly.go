@@ -1,6 +1,10 @@
 package tools
 
-import "strings"
+import (
+	"regexp"
+	"slices"
+	"strings"
+)
 
 // readOnlyCommands are inspection commands that cannot change the workspace.
 //
@@ -13,19 +17,57 @@ import "strings"
 // and it belongs in that product's rego, not in the kernel.
 var readOnlyCommands = []string{
 	"cd", "ls", "pwd", "cat", "head", "tail", "wc", "file", "stat", "du", "df",
-	"which", "whereis", "env", "date", "uname", "echo",
+	"which", "whereis", "date", "uname", "echo",
 	"git status", "git diff", "git log", "git show", "git branch",
-	"git remote", "git rev-parse", "git blame", "git describe",
+	"git remote -v", "git rev-parse", "git blame", "git describe",
 	"go version", "go env", "go list", "go vet", "go doc",
 	"npm ls", "pnpm ls", "yarn list",
 	"cargo tree", "python --version", "node --version",
-	"rg", "grep", "find", "tree", "sed -n", "awk", "sort", "uniq", "cut", "basename", "dirname",
+	"rg", "grep", "find", "tree", "sed -n", "sort", "uniq", "cut", "basename", "dirname",
 }
 
 // writeFlags are options that make an otherwise harmless command write.
 // `find` reads until it is given -delete or -exec, and the leading word alone
 // cannot tell the two apart.
 var writeFlags = []string{"-delete", "-exec", "-execdir", "-ok", "-fprint", "-i", "--in-place"}
+
+// commandWriteFlags are options that write or run something only on the
+// command they are listed under: `-o` is harmless to grep and writes for sort.
+var commandWriteFlags = map[string][]string{
+	"sort":       {"-o", "--output", "--compress-program"},
+	"rg":         {"--pre"},
+	"git diff":   {"--output", "--ext-diff"},
+	"git log":    {"--output", "--ext-diff"},
+	"git show":   {"--output", "--ext-diff"},
+	"git branch": {"-d", "-D", "-m", "-M", "-c", "-C", "-f", "-u", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream", "--edit-description"},
+	"find":       {"-fprintf", "-fprint0", "-fls", "-okdir"},
+}
+
+// sedPrint is the one sed script known to only print: its language can also
+// write files and run commands.
+var sedPrint = regexp.MustCompile(`^sed -n '?[0-9]+(,[0-9]+)?p'?( [^ ]+)*$`)
+
+func hasWriteFlag(stage string) bool {
+	if matchesAnyPrefix(stage, []string{"sed"}) && !sedPrint.MatchString(stage) {
+		return true
+	}
+	fields := strings.Fields(stage)
+	for command, flags := range commandWriteFlags {
+		if !matchesAnyPrefix(stage, []string{command}) {
+			continue
+		}
+		for _, field := range fields {
+			name, _, _ := strings.Cut(field, "=")
+			if slices.Contains(flags, name) {
+				return true
+			}
+			if command == "sort" && strings.HasPrefix(field, "-o") && !strings.HasPrefix(field, "--") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // isReadOnlyCommand reports whether every stage of a command line is an
 // inspection command.
@@ -49,7 +91,7 @@ func isReadOnlyCommand(line string) bool {
 		if stage == "" {
 			continue
 		}
-		if !matchesAnyPrefix(stage, readOnlyCommands) {
+		if !matchesAnyPrefix(stage, readOnlyCommands) || hasWriteFlag(stage) {
 			return false
 		}
 	}
