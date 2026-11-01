@@ -11,26 +11,59 @@ go get github.com/lalternativefabrique/cortex/connectors
 
 ## Quick start
 
-Serve an agent and call it over A2A ([`examples/hello`](examples/hello/main.go)):
+Serve an agent over A2A ([`examples/hello`](examples/hello/main.go)). The process takes its secrets from the environment, bounds each turn, and drains on `SIGTERM`:
 
 ```go
-ctx := context.Background()
-provider := agent.Provider{BaseURL: "http://localhost:8000/v1", Model: "m"}
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+defer stop()
+
+token := os.Getenv("CORTEX_TOKEN")
+if token == "" {
+	log.Fatal("CORTEX_TOKEN is required")
+}
 
 h, err := host.New(ctx, host.Config{
-	Agent:    host.Agent{Name: "hello"},
-	Provider: provider,
-	Token:    "tok",
+	Agent: host.Agent{Name: "hello", Instructions: "Answer briefly."},
+	Provider: agent.Provider{
+		BaseURL: os.Getenv("CORTEX_BASE_URL"),
+		APIKey:  os.Getenv("CORTEX_API_KEY"),
+		Model:   os.Getenv("CORTEX_MODEL"),
+		Timeout: 2 * time.Minute,
+	},
+	Token:          token,
+	PublicURL:      os.Getenv("CORTEX_PUBLIC_URL"),
+	MaxSteps:       10,
+	MaxInputTokens: 200_000,
 })
 if err != nil {
 	log.Fatal(err)
 }
 defer h.Close()
 
-srv := httptest.NewServer(h.Handler())
-defer srv.Close()
+srv := &http.Server{Addr: ":7400", Handler: h.Handler(), ReadHeaderTimeout: 10 * time.Second}
+go func() {
+	<-ctx.Done()
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdown)
+}()
+if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	log.Fatal(err)
+}
+```
 
-text, _, err := client.Say(ctx, client.Agent{URL: srv.URL, Token: "tok"}, client.Request{Text: "hello"})
+Run it, then call it from any Go service:
+
+```bash
+export CORTEX_TOKEN=$(openssl rand -hex 32)
+CORTEX_BASE_URL=https://api.openai.com/v1 CORTEX_API_KEY=... CORTEX_MODEL=gpt-5 \
+go run ./examples/hello
+```
+
+```go
+text, _, err := client.Say(ctx,
+	client.Agent{URL: "http://localhost:7400", Token: os.Getenv("CORTEX_TOKEN")},
+	client.Request{Text: "hello"})
 ```
 
 `BaseURL` includes the version segment. Or run the bare loop with no server:
@@ -56,6 +89,20 @@ res, err := r.Run(ctx, []agent.Message{{Role: agent.RoleUser, Content: "hi"}})
 | `skill`, `skills` | Typed app actions, and Markdown skills invoked by name |
 | `connectors` | Separate module: NATS cluster, web, vision, the `cortex` server |
 
+## Before production
+
+The quick start is one instance with a shared token and no tools. Each step below is a choice it leaves open:
+
+| Need | Set |
+| --- | --- |
+| Identify callers, not just share a token | `host.Config.Verify` |
+| Control what the model may do with tools | `host.Config.Approver`; every tool runs ungated without it |
+| Keep conversations across restarts, or run several instances | `Turns` and `History` from `connectors/cluster` (NATS); the default is in memory, for one instance |
+| Isolate model-decided commands | `sandbox.Space`, the workspace's [sklp](https://github.com/lalternativefabrique/sklp) agent space, is the default; `sandbox.Container` is for a service that is itself deployed confined |
+| Terminate TLS | A reverse proxy, or your own `http.Server` configuration |
+
+To skip the wiring of identity and NATS, the [`cortex` server](docs/server.md) takes them from environment variables.
+
 ## Documentation
 
 - [The agent loop](docs/loop.md)
@@ -66,7 +113,7 @@ res, err := r.Run(ctx, []agent.Message{{Role: agent.RoleUser, Content: "hi"}})
 
 ## Security defaults
 
-Cortex does not lock itself down for you. With no `Approver`, `host` gates nothing and `serve` allows everything; with no `Sandbox`, `serve` runs commands directly on the host. Read the [security model](docs/security.md) before exposing an agent.
+With no `Approver`, `host` gates nothing, and `serve` lets reads and inspection commands through and refuses the rest. Commands only ever run inside an sklp agent space: without sklp they fail, they never fall back to the host. Read the [security model](docs/security.md) before exposing an agent.
 
 ## Status
 
