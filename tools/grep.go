@@ -18,6 +18,9 @@ type GrepConfig struct {
 	// DefaultGrepMaxMatches.
 	MaxMatches int
 	Timeout    time.Duration
+	// Approver may refuse a search: a secret file named as its path, or a
+	// deny rule. Nil searches anything.
+	Approver Approver
 }
 
 const (
@@ -77,6 +80,19 @@ func (t *grepTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 	searchPath, err := resolveWithinRoot(t.cfg.Root, args.Path)
 	if err != nil {
 		return failure("%v", err)
+	}
+	if t.cfg.Approver != nil {
+		refused, err := approve(ctx, t.cfg.Approver, Request{
+			Tool:   t.Name(),
+			Action: "grep " + args.Pattern + " in " + relativeToRoot(t.cfg.Root, searchPath),
+			Scope:  "read:" + searchPath,
+		})
+		if err != nil {
+			return failure("approval failed: %v", err)
+		}
+		if refused != "" {
+			return failure("%s", refused)
+		}
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, t.cfg.Timeout)
