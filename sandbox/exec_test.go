@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestRunCapturesStdoutAndExitCode(t *testing.T) {
-	out, err := NewDirect().Run(context.Background(), Command{Line: "echo hello"})
+	out, err := hostRun(context.Background(), Command{Line: "echo hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +25,7 @@ func TestRunCapturesStdoutAndExitCode(t *testing.T) {
 }
 
 func TestRunSeparatesStderr(t *testing.T) {
-	out, err := NewDirect().Run(context.Background(), Command{Line: "echo out; echo err >&2"})
+	out, err := hostRun(context.Background(), Command{Line: "echo out; echo err >&2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +35,7 @@ func TestRunSeparatesStderr(t *testing.T) {
 }
 
 func TestRunReportsNonZeroExitWithoutError(t *testing.T) {
-	out, err := NewDirect().Run(context.Background(), Command{Line: "exit 7"})
+	out, err := hostRun(context.Background(), Command{Line: "exit 7"})
 	if err != nil {
 		t.Fatalf("a command that ran and failed returned an error: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestRunReportsNonZeroExitWithoutError(t *testing.T) {
 }
 
 func TestRunInterpretsShellFeatures(t *testing.T) {
-	out, err := NewDirect().Run(context.Background(), Command{
+	out, err := hostRun(context.Background(), Command{
 		Line: "echo one && echo two | tr a-z A-Z",
 	})
 	if err != nil {
@@ -59,7 +60,7 @@ func TestRunHonorsWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "marker"), []byte("x"), 0o644)
 
-	out, err := NewDirect().Run(context.Background(), Command{Line: "ls", Dir: dir})
+	out, err := hostRun(context.Background(), Command{Line: "ls", Dir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestRunHonorsWorkingDirectory(t *testing.T) {
 func TestRunStreamsLinesAsProduced(t *testing.T) {
 	var mu sync.Mutex
 	var lines []string
-	_, err := NewDirect().Run(context.Background(), Command{
+	_, err := hostRun(context.Background(), Command{
 		Line: "echo a; echo b >&2; echo c",
 		OnLine: func(_ Stream, line string) {
 			mu.Lock()
@@ -90,7 +91,7 @@ func TestRunStreamsLinesAsProduced(t *testing.T) {
 func TestRunClassifiesStreamedLines(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[Stream][]string{}
-	_, err := NewDirect().Run(context.Background(), Command{
+	_, err := hostRun(context.Background(), Command{
 		Line: "echo out; echo err >&2",
 		OnLine: func(s Stream, line string) {
 			mu.Lock()
@@ -108,7 +109,7 @@ func TestRunClassifiesStreamedLines(t *testing.T) {
 
 func TestRunKillsOnTimeout(t *testing.T) {
 	started := time.Now()
-	out, err := NewDirect().Run(context.Background(), Command{
+	out, err := hostRun(context.Background(), Command{
 		Line:    "sleep 10",
 		Timeout: 300 * time.Millisecond,
 	})
@@ -128,7 +129,7 @@ func TestRunKillsChildProcessesOnTimeout(t *testing.T) {
 	// pipes; killing only the shell would hang the read until the child
 	// finishes on its own.
 	started := time.Now()
-	_, err := NewDirect().Run(context.Background(), Command{
+	_, err := hostRun(context.Background(), Command{
 		Line:    "sleep 30 & wait",
 		Timeout: 300 * time.Millisecond,
 	})
@@ -148,7 +149,7 @@ func TestRunHonorsContextCancellation(t *testing.T) {
 	}()
 
 	started := time.Now()
-	if _, err := NewDirect().Run(ctx, Command{Line: "sleep 30", Timeout: time.Minute}); err != nil {
+	if _, err := hostRun(ctx, Command{Line: "sleep 30", Timeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
@@ -157,7 +158,7 @@ func TestRunHonorsContextCancellation(t *testing.T) {
 }
 
 func TestRunPassesEnvironment(t *testing.T) {
-	out, err := NewDirect().Run(context.Background(), Command{
+	out, err := hostRun(context.Background(), Command{
 		Line: "echo $AI_TEST_VAR",
 		Env:  []string{"AI_TEST_VAR=present"},
 	})
@@ -172,7 +173,7 @@ func TestRunPassesEnvironment(t *testing.T) {
 func TestRunHandlesLongLines(t *testing.T) {
 	// Compiler and test output routinely exceeds the scanner's default
 	// buffer; a line longer than it would otherwise abort the capture.
-	out, err := NewDirect().Run(context.Background(), Command{
+	out, err := hostRun(context.Background(), Command{
 		Line: "head -c 200000 /dev/zero | tr '\\0' 'x'",
 	})
 	if err != nil {
@@ -183,8 +184,16 @@ func TestRunHandlesLongLines(t *testing.T) {
 	}
 }
 
-func TestNameReportsIsolation(t *testing.T) {
-	if got := NewDirect().Name(); got != "none" {
-		t.Fatalf("Name = %q, want %q so the operator can see what confinement is in effect", got, "none")
+func hostRun(ctx context.Context, c Command) (Output, error) {
+	timeout := c.Timeout
+	if timeout == 0 {
+		timeout = defaultCommandTimeout
 	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "/bin/sh", "-c", c.Line)
+	cmd.Dir = c.Dir
+	cmd.Stdin = c.Stdin
+	cmd.Env = append(Inherited(os.Environ(), DefaultInherit, nil), c.Env...)
+	return execute(cctx, cmd, c, time.Now())
 }

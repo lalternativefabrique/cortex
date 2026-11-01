@@ -15,9 +15,8 @@ import (
 const MaxDrawingBytes = 32 * 1024
 
 var (
-	ErrNotSVG         = errors.New("not an svg document")
-	ErrDrawingTooBig  = fmt.Errorf("drawing exceeds %d bytes", MaxDrawingBytes)
-	errUnsafeFragment = errors.New("unsafe element or attribute")
+	ErrNotSVG        = errors.New("not an svg document")
+	ErrDrawingTooBig = fmt.Errorf("drawing exceeds %d bytes", MaxDrawingBytes)
 )
 
 // svgElements is everything a drawing may be made of: shapes, text, paint

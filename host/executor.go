@@ -91,7 +91,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, turn.ContextID)
 	}
 	provider := h.cfg.Provider
-	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: h.cfg.MaxInputTokens}
+	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: max(h.cfg.MaxInputTokens, 0)}
 	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
 	system := instructions(base, turnContext)
 	schema, hasSchema := outputSchema(meta)
@@ -220,9 +220,9 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 		if !ok {
 			return end(a2a.TaskStateFailed, "the agent did not answer in the required format within its token budget")
 		}
-		runner, err := runnerFor(left)
-		if err != nil {
-			return end(a2a.TaskStateFailed, err.Error())
+		runner, runnerErr := runnerFor(left)
+		if runnerErr != nil {
+			return end(a2a.TaskStateFailed, runnerErr.Error())
 		}
 		history = append(history,
 			agent.Message{Role: agent.RoleAssistant, Content: res.Text},
@@ -322,20 +322,39 @@ func instructions(base, turnContext string) string {
 	return strings.TrimSpace(base + "\n\n" + turnContext)
 }
 
-func metadata(msg *a2a.Message) (string, map[string]string, string) {
+func metadata(msg *a2a.Message) (string, mcp.Headers, string) {
 	if msg == nil {
 		return "", nil, ""
 	}
 	subject, _ := msg.Metadata[SubjectKey].(string)
 	turnContext, _ := msg.Metadata[TurnContextKey].(string)
-	raw, _ := msg.Metadata[MCPHeadersKey].(map[string]any)
-	headers := make(map[string]string, len(raw))
-	for k, v := range raw {
-		if s, ok := v.(string); ok {
-			headers[k] = s
+	return strings.TrimSpace(subject), mcpHeaders(msg.Metadata[MCPHeadersKey]), strings.TrimSpace(turnContext)
+}
+
+// mcpHeaders reads the caller's headers: a map of header to value goes to
+// every server; a map of server to such a map goes to that server only.
+func mcpHeaders(raw any) mcp.Headers {
+	m, _ := raw.(map[string]any)
+	out := mcp.Headers{}
+	for k, v := range m {
+		switch v := v.(type) {
+		case string:
+			if out["*"] == nil {
+				out["*"] = map[string]string{}
+			}
+			out["*"][k] = v
+		case map[string]any:
+			for h, hv := range v {
+				if s, ok := hv.(string); ok {
+					if out[k] == nil {
+						out[k] = map[string]string{}
+					}
+					out[k][h] = s
+				}
+			}
 		}
 	}
-	return strings.TrimSpace(subject), headers, strings.TrimSpace(turnContext)
+	return out
 }
 
 // stream writes the turn to the task as it happens.

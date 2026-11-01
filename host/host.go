@@ -91,7 +91,9 @@ type Config struct {
 	// MaxSteps bounds one turn's model calls; MaxInputTokens bounds what one
 	// turn sends to the model in all (agent.Config). A skill may declare
 	// tighter bounds of its own. Zero leaves cortex's defaults.
-	MaxSteps       int
+	MaxSteps int
+	// MaxInputTokens zero takes DefaultMaxInputTokens; a negative value
+	// leaves a turn unbounded.
 	MaxInputTokens int
 	ContextWindow  int
 	// Version is what the Agent Card reports.
@@ -143,6 +145,9 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.MaxInputTokens == 0 {
+		cfg.MaxInputTokens = DefaultMaxInputTokens
+	}
 	h := &Host{cfg: cfg, skillList: cfg.Skills, skills: skills, appInstructions: cfg.AppInstructions, servers: startServers(ctx, cfg.MCP), turns: cfg.Turns, history: cfg.History}
 	if h.history == nil {
 		h.history = NewMemoryHistory(maxConversations)
@@ -185,6 +190,14 @@ func (h *Host) Handler() http.Handler {
 	return mux
 }
 
+// DefaultMaxInputTokens is what one turn may send to the model in all when
+// the host sets no bound of its own.
+const DefaultMaxInputTokens = 2_000_000
+
+// MaxRequestBytes bounds one request body: a message and its files, base64
+// included.
+const MaxRequestBytes = 64 << 20
+
 func (h *Host) authorized(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -193,6 +206,7 @@ func (h *Host) authorized(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBytes)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -263,7 +277,7 @@ func cortexExtension() a2a.AgentExtension {
 				OutputSchemaKey:    "a JSON Schema the answer must match; the answer then comes as one data part of the answer artifact",
 				SubjectKey:         "the person the run acts for, its memory scope",
 				TurnContextKey:     "text added to the agent's instructions for this run only",
-				MCPHeadersKey:      "headers every MCP call of the run sends, never shown to the model",
+				MCPHeadersKey:      "headers the run's MCP calls send, by server name or for every server, never shown to the model",
 				TurnTokenKey:       "the Bearer the run's model and memory calls present",
 				ReasoningEffortKey: "how much the model thinks on this run: high, medium, low or none",
 				RecallKey:          "false runs without memory: nothing recalled, nothing written",

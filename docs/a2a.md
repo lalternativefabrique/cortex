@@ -12,7 +12,7 @@
 | `GET /skills`, `POST /skills/refresh` | Skill catalog |
 | `GET /context` | Agent context |
 
-Message metadata carries per-turn options: `subject`, `mcpHeaders`, `turnContext`, `turnToken`, `outputSchema`, `skill`, `model`, `reasoningEffort`, `recall`.
+Message metadata carries per-turn options: `subject`, `mcpHeaders`, `turnContext`, `turnToken`, `outputSchema`, `skill`, `model`, `reasoningEffort`, `recall`. `mcpHeaders` is either headers for every server (`{"Authorization": "..."}`) or headers by server name (`{"orbit": {"Authorization": "..."}}`).
 
 `serve` is a separate local server with A2A at `/a2a`, where the context ID is the session, plus `/turn`, `/turn/steer`, `/sessions` and `/diff`.
 

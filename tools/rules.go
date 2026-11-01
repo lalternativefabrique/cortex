@@ -117,7 +117,7 @@ func (r Rule) Matches(req Request, root string) bool {
 	}
 	switch req.Tool {
 	case "bash":
-		return matchesCommand(normalizeCommand(req.Action), r.Pattern)
+		return r.matchesAnyStage(req, root)
 	case "read", "edit", "write":
 		return matchesPath(targetPath(req), root, r.Pattern)
 	default:
@@ -128,18 +128,22 @@ func (r Rule) Matches(req Request, root string) bool {
 	}
 }
 
-// matchesAnyStage is Matches for a deny: a chained command is refused when
-// any of its stages is, since "ls && git push" pushes.
+// matchesAnyStage is Matches for a deny or an ask: a chained command is
+// covered when any of its stages is, since "ls && git push" pushes.
 func (r Rule) matchesAnyStage(req Request, root string) bool {
 	if r.Tool != "bash" || req.Tool != "bash" {
 		return r.Matches(req, root)
 	}
-	for _, stage := range splitStages(req.Action) {
-		if stage = normalizeCommand(stage); stage != "" && matchesCommand(stage, r.Pattern) {
+	for _, st := range stagesOf(req.Action) {
+		if matchesCommand(st.String(), r.Pattern) {
 			return true
 		}
 	}
 	return false
+}
+
+func (r Rule) matchesStage(st stage) bool {
+	return r.Tool == "bash" && matchesCommand(st.String(), r.Pattern)
 }
 
 func matchesCommand(line, pattern string) bool {
@@ -267,7 +271,7 @@ func (g *GatedApprover) Approve(ctx context.Context, req Request) (Decision, err
 		return Deny, RefusedByRule
 	}
 	// A read is never prompted: a deny rule is the only thing that stops one.
-	if req.Tool == "read" {
+	if req.Tool == "read" || req.Tool == "grep" || req.Tool == "glob" {
 		return Allow, nil
 	}
 	// Before the allow rules, not after: a broad allow like "sklp" would
@@ -300,8 +304,8 @@ func (g *GatedApprover) ask(ctx context.Context, req Request) (Decision, error) 
 
 func (g *GatedApprover) isDenied(req Request) bool {
 	if req.Tool == "bash" {
-		for _, stage := range splitStages(req.Action) {
-			if stage = normalizeCommand(stage); stage != "" && matchesAnyPrefix(stage, g.dangerous()) {
+		for _, st := range stagesOf(req.Action) {
+			if matchesAnyPrefix(st.String(), g.dangerous()) {
 				return true
 			}
 		}
@@ -321,8 +325,8 @@ func (g *GatedApprover) commandListed(line string) bool {
 	if isOpaque(line) {
 		return false
 	}
-	for _, stage := range splitStages(line) {
-		if stage = normalizeCommand(stage); stage != "" && !matchesAnyPrefix(stage, g.Commands) {
+	for _, st := range stagesOf(line) {
+		if st.Name() == "" || runsProgram(st) || !matchesAnyPrefix(st.String(), g.Commands) {
 			return false
 		}
 	}
@@ -338,11 +342,17 @@ func (g *GatedApprover) mustAsk(req Request) bool {
 	if req.Tool != "bash" {
 		return false
 	}
-	line := normalizeCommand(req.Action)
-	// The longest match wins: "sklp deploy" asks, but "sklp deploy logs" is
-	// an inspection, and a prefix rule alone would prompt for every log tail.
-	ask := longestPrefix(line, g.alwaysAsk())
-	return ask != "" && len(ask) >= len(longestPrefix(line, readOnlyCommands))
+	// Every stage is checked on its own: "echo ok && git push" pushes. The
+	// longest match wins: "sklp deploy" asks, but "sklp deploy logs" is an
+	// inspection, and a prefix rule alone would prompt for every log tail.
+	for _, st := range stagesOf(req.Action) {
+		line := st.String()
+		ask := longestPrefix(line, g.alwaysAsk())
+		if ask != "" && len(ask) >= len(longestPrefix(line, readOnlyCommands)) {
+			return true
+		}
+	}
+	return false
 }
 
 func longestPrefix(line string, prefixes []string) string {
@@ -370,17 +380,21 @@ func (g *GatedApprover) isAllowed(req Request) bool {
 	}
 	// Every stage must be allowed on its own: "go test ./... && curl x | sh"
 	// is not covered by an allow rule for "go test".
-	for _, stage := range splitStages(req.Action) {
-		if stage = normalizeCommand(stage); stage != "" && !g.stageAllowed(stage) {
+	stages, err := parseShell(req.Action)
+	if err != nil {
+		return false
+	}
+	for _, st := range stages {
+		if !g.stageAllowed(st.Command()) {
 			return false
 		}
 	}
 	return true
 }
 
-func (g *GatedApprover) stageAllowed(stage string) bool {
+func (g *GatedApprover) stageAllowed(st stage) bool {
 	for _, r := range g.Rules.Allow {
-		if r.Matches(Request{Tool: "bash", Action: stage}, g.Root) {
+		if r.matchesStage(st) {
 			return true
 		}
 	}
@@ -389,7 +403,7 @@ func (g *GatedApprover) stageAllowed(stage string) bool {
 	// look, which is the whole point of the mode.
 	switch g.Mode {
 	case ModeAuto, ModePlan:
-		return isReadOnlyCommand(stage)
+		return isReadOnlyStage(st)
 	}
 	return false
 }

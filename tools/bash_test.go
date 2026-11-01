@@ -1,6 +1,11 @@
 package tools
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -9,7 +14,7 @@ import (
 
 func TestBashReportsStdoutAndExitCode(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "echo hello",
 	})
 	if !strings.Contains(out, "exit_code=0") {
@@ -22,7 +27,7 @@ func TestBashReportsStdoutAndExitCode(t *testing.T) {
 
 func TestBashTreatsNonZeroExitAsResult(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "exit 3",
 	})
 	if !strings.Contains(out, "exit_code=3") {
@@ -35,7 +40,7 @@ func TestBashTreatsNonZeroExitAsResult(t *testing.T) {
 
 func TestBashPutsStderrBeforeStdout(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "echo to-stdout; echo to-stderr >&2",
 	})
 	errIdx := strings.Index(out, "--- stderr ---")
@@ -50,7 +55,7 @@ func TestBashPutsStderrBeforeStdout(t *testing.T) {
 
 func TestBashRefusesRepeatOfFailedCommand(t *testing.T) {
 	root := t.TempDir()
-	tool := NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()})
+	tool := NewBash(BashConfig{Root: root, Sandbox: hostShell{}})
 	args := map[string]any{"command": "exit 1"}
 
 	if out := run(t, tool, args); !strings.Contains(out, "exit_code=1") {
@@ -64,7 +69,7 @@ func TestBashRefusesRepeatOfFailedCommand(t *testing.T) {
 
 func TestBashAllowsRepeatOfSucceedingCommand(t *testing.T) {
 	root := t.TempDir()
-	tool := NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()})
+	tool := NewBash(BashConfig{Root: root, Sandbox: hostShell{}})
 	args := map[string]any{"command": "true"}
 	run(t, tool, args)
 	if out := run(t, tool, args); strings.Contains(out, "already failed") {
@@ -75,7 +80,7 @@ func TestBashAllowsRepeatOfSucceedingCommand(t *testing.T) {
 func TestBashHonorsDenial(t *testing.T) {
 	root := t.TempDir()
 	out := run(t, NewBash(BashConfig{
-		Root: root, Sandbox: sandbox.NewDirect(), Approver: DenyAll{},
+		Root: root, Sandbox: hostShell{}, Approver: DenyAll{},
 	}), map[string]any{"command": "echo should-not-run"})
 	if !strings.Contains(out, "read-only") {
 		t.Fatalf("denial was not reported: %q", out)
@@ -89,7 +94,7 @@ func TestBashHonorsDenial(t *testing.T) {
 
 func TestBashRefusesCwdOutsideRoot(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "pwd", "cwd": "../..",
 	})
 	if !strings.Contains(out, "outside the workspace") {
@@ -99,7 +104,7 @@ func TestBashRefusesCwdOutsideRoot(t *testing.T) {
 
 func TestBashInterpretsShellFeatures(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "echo one && echo two | tr a-z A-Z",
 	})
 	if !strings.Contains(out, "TWO") {
@@ -110,7 +115,7 @@ func TestBashInterpretsShellFeatures(t *testing.T) {
 func TestBashRunsInWorkspaceRootByDefault(t *testing.T) {
 	root := t.TempDir()
 	writeTemp(t, root, "marker.txt", "x")
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "ls",
 	})
 	if !strings.Contains(out, "marker.txt") {
@@ -120,7 +125,7 @@ func TestBashRunsInWorkspaceRootByDefault(t *testing.T) {
 
 func TestBashReportsTimeout(t *testing.T) {
 	root := t.TempDir()
-	out := run(t, NewBash(BashConfig{Root: root, Sandbox: sandbox.NewDirect()}), map[string]any{
+	out := run(t, NewBash(BashConfig{Root: root, Sandbox: hostShell{}}), map[string]any{
 		"command": "sleep 5", "timeout": 1,
 	})
 	if !strings.Contains(out, "killed after") {
@@ -131,7 +136,7 @@ func TestBashReportsTimeout(t *testing.T) {
 func TestBashTruncatesLargeOutput(t *testing.T) {
 	root := t.TempDir()
 	out := run(t, NewBash(BashConfig{
-		Root: root, Sandbox: sandbox.NewDirect(), MaxOutputBytes: 500,
+		Root: root, Sandbox: hostShell{}, MaxOutputBytes: 500,
 	}), map[string]any{"command": "seq 1 20000"})
 	if len(out) > 1200 {
 		t.Fatalf("output is %d bytes despite a 500-byte cap", len(out))
@@ -142,4 +147,27 @@ func TestBashTruncatesLargeOutput(t *testing.T) {
 	if !strings.Contains(out, "20000") {
 		t.Fatal("the tail was dropped, but that is where a failure's verdict lives")
 	}
+}
+
+type hostShell struct{}
+
+func (hostShell) Name() string { return "test-host-shell" }
+
+func (hostShell) Run(ctx context.Context, c sandbox.Command) (sandbox.Output, error) {
+	cctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "/bin/sh", "-c", c.Line)
+	cmd.Dir = c.Dir
+	cmd.Stdin = c.Stdin
+	cmd.Env = append(os.Environ(), c.Env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	out := sandbox.Output{Stdout: stdout.String(), Stderr: stderr.String(), TimedOut: cctx.Err() == context.DeadlineExceeded}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		out.ExitCode = ee.ExitCode()
+		err = nil
+	}
+	return out, err
 }
