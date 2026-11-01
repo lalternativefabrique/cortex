@@ -11,7 +11,10 @@ package serve
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,7 +72,8 @@ type Config struct {
 	// what its Agent Card advertises. Empty leaves the card's url empty
 	// rather than advertising a loopback port no peer can reach.
 	PublicURL string
-	// Token authenticates the window. Empty generates one, printed on start.
+	// Token authenticates the window. Empty generates one, which Token()
+	// returns for the caller to hand to its window.
 	Token string
 	// MaxSteps bounds one turn. Zero leaves the agent's own default.
 	MaxSteps int
@@ -109,15 +113,12 @@ type Config struct {
 	// Pricer prices a turn's usage for the window. Nil reports every turn
 	// unpriced, which is not an error.
 	Pricer Pricer
-	// Sandbox runs the shell's commands; nil runs them on this machine with
-	// a stripped environment (sandbox.Direct). Close closes it when it is
-	// an io.Closer, such as a sandbox.Space.
+	// Sandbox runs the shell's commands; nil opens the workspace's sklp
+	// agent space, and commands fail until it is up. Close closes it when
+	// it is an io.Closer, such as a sandbox.Space.
 	Sandbox sandbox.Sandbox
-	// EnvPassthrough names environment variables commands keep beyond
-	// sandbox.DefaultInherit; tokens and keys are dropped otherwise.
-	EnvPassthrough []string
-	// Approver gates writes and commands. Nil approves everything, which is
-	// right when the person asking is the person whose machine it is.
+	// Approver gates writes and commands. Nil lets inspection through and
+	// refuses the rest: nobody is there to answer.
 	Approver tools.Approver
 	// Tools are the host's own, offered beside the built-in ones.
 	Tools []agent.Tool
@@ -175,16 +176,34 @@ type talk struct {
 	incognito bool
 }
 
+// Token is what a caller presents to the window's endpoints.
+func (s *Server) Token() string { return s.cfg.Token }
+
+func newToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("serve: generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // New builds the server and the tool set it exposes.
 func New(cfg Config) (*Server, error) {
 	if strings.TrimSpace(cfg.Root) == "" {
 		return nil, fmt.Errorf("serve: Root is required")
 	}
 	if cfg.Approver == nil {
-		cfg.Approver = tools.AllowAll{}
+		cfg.Approver = &tools.GatedApprover{Mode: tools.ModeAuto, Root: cfg.Root}
+	}
+	if cfg.Token == "" {
+		token, err := newToken()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Token = token
 	}
 	if cfg.Sandbox == nil {
-		cfg.Sandbox = &sandbox.Direct{Shell: "/bin/sh", Inherit: sandbox.DefaultInherit, Passthrough: cfg.EnvPassthrough}
+		cfg.Sandbox = &sandbox.Space{Root: cfg.Root}
 	}
 	srv := &Server{
 		cfg:      cfg,
@@ -254,8 +273,8 @@ func (s *Server) deferredTools() []agent.Toolset {
 func codingTools(cfg Config) []agent.Tool {
 	tracker := tools.NewReadTracker()
 	return []agent.Tool{
-		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker}),
-		tools.NewGrep(tools.GrepConfig{Root: cfg.Root}),
+		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewGrep(tools.GrepConfig{Root: cfg.Root, Approver: cfg.Approver}),
 		tools.NewGlob(tools.GlobConfig{Root: cfg.Root}),
 		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
@@ -275,7 +294,7 @@ func assistantTools(cfg Config) []agent.Tool {
 	}
 	return []agent.Tool{
 		tools.NewRead(tools.ReadConfig{Root: files, Approver: hiddenRefused{root: files, next: cfg.Approver}}),
-		tools.NewGrep(tools.GrepConfig{Root: files}),
+		tools.NewGrep(tools.GrepConfig{Root: files, Approver: hiddenRefused{root: files, next: cfg.Approver}}),
 		tools.NewGlob(tools.GlobConfig{Root: files}),
 		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Approver: cfg.Approver}),
 	}
@@ -370,9 +389,9 @@ func (s *Server) authenticated(next http.Handler) http.Handler {
 			return
 		}
 
-		if s.cfg.Token != "" {
+		{
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if got != s.cfg.Token {
+			if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
 				// The caller is a deployment, not a person: a 401 here means
 				// its token was never configured or no longer matches, and
 				// saying so beats a queue that silently never drains. The

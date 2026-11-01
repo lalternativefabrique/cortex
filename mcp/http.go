@@ -15,12 +15,18 @@ import (
 // itself broke, not that the RPC failed — an RPC failure is the "error"
 // field in an otherwise-200 body).
 type httpTransport struct {
+	name string
 	url  string
 	http *http.Client
 }
 
+// maxResponseBytes bounds what one reply may hold: a tool result past it is
+// a broken server, not a result.
+const maxResponseBytes = 32 << 20
+
 func newHTTPTransport(sc ServerConfig) *httpTransport {
 	return &httpTransport{
+		name: sc.Name,
 		url:  sc.URL,
 		http: &http.Client{Timeout: sc.Timeout},
 	}
@@ -69,7 +75,7 @@ func (t *httpTransport) doCall(ctx context.Context, req request) (response, erro
 	}
 
 	var resp response
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, maxResponseBytes)).Decode(&resp); err != nil {
 		return response{}, fmt.Errorf("decode %s response: %w", req.Method, err)
 	}
 	return resp, nil
@@ -88,7 +94,10 @@ func (t *httpTransport) send(ctx context.Context, req request) (*http.Response, 
 		return nil, fmt.Errorf("build request for %s: %w", req.Method, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	for k, v := range headersFrom(ctx) {
+	for k, v := range headersFor(ctx, t.name) {
+		if http.CanonicalHeaderKey(k) == "Content-Type" {
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 

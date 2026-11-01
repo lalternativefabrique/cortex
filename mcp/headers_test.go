@@ -17,7 +17,7 @@ func TestATurnsHeadersReachTheServerOnlyForThatTurn(t *testing.T) {
 	defer srv.Close()
 	tr := newHTTPTransport(ServerConfig{URL: srv.URL})
 
-	if _, err := tr.call(WithHeaders(context.Background(), map[string]string{"Authorization": "Bearer grant-marie"}), "tools/call", nil); err != nil {
+	if _, err := tr.call(WithHeaders(context.Background(), Headers{"*": {"Authorization": "Bearer grant-marie"}}), "tools/call", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tr.call(context.Background(), "tools/call", nil); err != nil {

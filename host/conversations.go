@@ -12,6 +12,10 @@ import (
 // recently spoken conversation is dropped first.
 const maxConversations = 2000
 
+// maxMessages bounds one conversation; the oldest messages are dropped
+// first, from a person's message so a tool call never loses its result.
+const maxMessages = 1000
+
 // conversations is each A2A context's history. It lives with the process: a
 // restarted container starts every context afresh.
 type conversations struct {
@@ -66,8 +70,20 @@ func (c *conversations) Append(_ context.Context, id string, messages ...agent.M
 		c.byID[id] = conv
 	}
 	conv.messages = append(conv.messages, messages...)
+	if len(conv.messages) > maxMessages {
+		conv.messages = fromUserMessage(conv.messages[len(conv.messages)-maxMessages:])
+	}
 	conv.used = time.Now()
 	return nil
+}
+
+func fromUserMessage(messages []agent.Message) []agent.Message {
+	for i, m := range messages {
+		if m.Role == agent.RoleUser {
+			return append([]agent.Message(nil), messages[i:]...)
+		}
+	}
+	return append([]agent.Message(nil), messages...)
 }
 
 func (c *conversations) evictOldest() {
