@@ -1,12 +1,10 @@
 // Package sandbox isolates how model-decided commands are executed.
 //
-// The harness depends on the Sandbox interface only. Direct execution is the
-// right default while the operator writes the prompts and reviews the
-// commands: the model can do no more than its operator already could. That
-// stops holding the moment the input stops coming from the operator — a
-// third-party job, an untrusted repository whose content reaches the model,
-// or an unattended trigger with no human gate — and a confining
-// implementation becomes required.
+// The harness depends on the Sandbox interface only. Space, the sklp agent
+// space, is the default everywhere a command can run: commands never run on
+// the machine that hosts the agent. Container is for a process that is
+// itself deployed confined, where that container is the boundary; it must
+// be chosen explicitly and refuses to build outside one.
 package sandbox
 
 import (

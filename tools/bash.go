@@ -84,7 +84,7 @@ func NewBash(cfg BashConfig) agent.Tool {
 		cfg.Approver = AllowAll{}
 	}
 	if cfg.Sandbox == nil {
-		cfg.Sandbox = sandbox.NewDirect()
+		cfg.Sandbox = &sandbox.Space{Root: cfg.Root}
 	}
 	return &bashTool{cfg: cfg, failedOnce: map[string]struct{}{}}
 }

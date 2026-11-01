@@ -11,53 +11,7 @@ import (
 	"time"
 )
 
-// Direct runs commands on the host with no confinement, bounded only by a
-// timeout. It is the default for an operator driving the agent on their own
-// machine and their own repository.
-type Direct struct {
-	// Shell is the interpreter, defaulting to /bin/sh.
-	Shell string
-	// DefaultTimeout applies when Command.Timeout is zero.
-	DefaultTimeout time.Duration
-	// Inherit lists the environment names a command keeps; nil keeps the
-	// whole environment, tokens and keys included.
-	Inherit []string
-	// Passthrough adds names the operator chose to hand to commands.
-	Passthrough []string
-}
-
 const defaultCommandTimeout = 2 * time.Minute
-
-// NewDirect returns a Direct sandbox with the standard shell and timeout.
-func NewDirect() *Direct {
-	return &Direct{Shell: "/bin/sh", DefaultTimeout: defaultCommandTimeout, Inherit: DefaultInherit}
-}
-
-func (d *Direct) Name() string { return "none" }
-
-func (d *Direct) Run(ctx context.Context, c Command) (Output, error) {
-	shell := d.Shell
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	timeout := c.Timeout
-	if timeout == 0 {
-		timeout = d.DefaultTimeout
-	}
-	if timeout == 0 {
-		timeout = defaultCommandTimeout
-	}
-
-	started := time.Now()
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(cctx, shell, "-c", c.Line)
-	cmd.Dir = c.Dir
-	cmd.Stdin = c.Stdin
-	cmd.Env = append(d.environ(), c.Env...)
-	return execute(cctx, cmd, c, started)
-}
 
 // execute runs cmd to completion, streaming its output to c.OnLine and
 // killing its whole process group when cctx ends.
@@ -107,6 +61,11 @@ func execute(cctx context.Context, cmd *exec.Cmd, c Command, started time.Time) 
 	return out, nil
 }
 
+// MaxCaptureBytes bounds what one stream of a command keeps in memory;
+// past it the output is still read, so the command is not blocked, and
+// dropped.
+const MaxCaptureBytes = 8 << 20
+
 // drain reads a pipe line by line, capturing every line and forwarding it to
 // onLine as it arrives. The buffer is raised well above the default because
 // compiler and test output routinely emits very long lines.
@@ -117,8 +76,10 @@ func drain(wg *sync.WaitGroup, r io.ReadCloser, capture *bytes.Buffer, stream St
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		capture.WriteString(line)
-		capture.WriteByte('\n')
+		if capture.Len() < MaxCaptureBytes {
+			capture.WriteString(line)
+			capture.WriteByte('\n')
+		}
 		if onLine != nil {
 			onLine(stream, line)
 		}

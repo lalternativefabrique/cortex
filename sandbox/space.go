@@ -21,7 +21,7 @@ const SpaceWorkdir = "/workspace"
 // the machine — no home directory, no other process, no loopback of the
 // host, no credential in its environment, its secret files mounted empty.
 type Space struct {
-	// Sklp is the sklp binary; it needs "agent up".
+	// Sklp is the sklp binary; empty looks it up on PATH. It needs "agent up".
 	Sklp string
 	// Root is the host workspace, mounted read-write at SpaceWorkdir.
 	Root string
@@ -66,7 +66,7 @@ func (s *Space) Run(ctx context.Context, c Command) (Output, error) {
 	args := []string{"space", "exec", s.name, "--", "env"}
 	args = append(args, c.Env...)
 	args = append(args, "sh", "-c", "cd "+shellQuote(dir)+" && "+c.Line)
-	cmd := exec.CommandContext(cctx, s.Sklp, args...)
+	cmd := exec.CommandContext(cctx, s.sklp(), args...)
 	cmd.Stdin = c.Stdin
 	return execute(cctx, cmd, c, started)
 }
@@ -131,7 +131,7 @@ func (s *Space) open(ctx context.Context) error {
 	for _, m := range s.Mounts {
 		args = append(args, "-mount", m)
 	}
-	up := exec.Command(s.Sklp, args...)
+	up := exec.Command(s.sklp(), args...)
 	in, err := up.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("sandbox: agent space input: %w", err)
@@ -181,7 +181,14 @@ func (s *Space) open(ctx context.Context) error {
 func (s *Space) ready(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(cctx, s.Sklp, "space", "exec", s.name, "--", "true").Run() == nil
+	return exec.CommandContext(cctx, s.sklp(), "space", "exec", s.name, "--", "true").Run() == nil
+}
+
+func (s *Space) sklp() string {
+	if s.Sklp == "" {
+		return "sklp"
+	}
+	return s.Sklp
 }
 
 func lastLines(text string, n int) string {

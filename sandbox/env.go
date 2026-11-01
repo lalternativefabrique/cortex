@@ -53,9 +53,4 @@ func nameMatches(name, pattern string) bool {
 	return name == pattern
 }
 
-func (d *Direct) environ() []string {
-	if d.Inherit == nil {
-		return os.Environ()
-	}
-	return Inherited(os.Environ(), d.Inherit, d.Passthrough)
-}
+func environ() []string { return os.Environ() }
