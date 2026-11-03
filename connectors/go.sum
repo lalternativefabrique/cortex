@@ -91,8 +91,8 @@ github.com/lalternative/packages/skalpai/sdk-go v0.10.0 h1:crb+LB4mQ/TqnQ3IxI1Nr
 github.com/lalternative/packages/skalpai/sdk-go v0.10.0/go.mod h1:ROSldQYaYqgLKAdyGkFJnmU7TTb/aLn+9R3xeKACUJA=
 github.com/lalternative/packages/tornad/sdk-go v0.2.0 h1:rw2p9QUF+7NQiGSS3AvfyCaDpUVXriv0RBfWUzquVnQ=
 github.com/lalternative/packages/tornad/sdk-go v0.2.0/go.mod h1:K3BjVthlRJjVn5zxoGsogJPFjpwjFxypPdVI+G51dxY=
-github.com/lalternativefabrique/cortex v0.61.0 h1:i0oyq/zjI+z3/87OfaotsxXaXbO9Xj0OBPYPSzORjvM=
-github.com/lalternativefabrique/cortex v0.61.0/go.mod h1:cESJEF9eiOq1c5UBwPjgIXwjxj6QXHg+1Z6YX8tCgb4=
+github.com/lalternativefabrique/cortex v0.62.0 h1:VsZnuKM8J7Fso1l7zaOa9qD2Q0grQCN/eoG8+EeEOSw=
+github.com/lalternativefabrique/cortex v0.62.0/go.mod h1:cESJEF9eiOq1c5UBwPjgIXwjxj6QXHg+1Z6YX8tCgb4=
 github.com/lalternativefabrique/searchkit/fileguard v0.6.0 h1:9gnpJ/50uEM6U+LWco4S8OEYHLNHpOaE0dC1xox3Z3g=
 github.com/lalternativefabrique/searchkit/fileguard v0.6.0/go.mod h1:8YK8FwoVc25YS6AiHLkWNBt22zj3fb58Jv8B86ir/c4=
 github.com/lalternativefabrique/searchkit/search v0.10.0 h1:1nwvS8HRzs0jl0+h98uyp1G4hO7IfBX+43/CfgzSUrM=
