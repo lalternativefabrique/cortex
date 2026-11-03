@@ -8,7 +8,7 @@ require (
 	github.com/lalternative/packages/go/svcauth v0.6.0
 	github.com/lalternative/packages/skalpai/sdk-go v0.10.0
 	github.com/lalternative/packages/tornad/sdk-go v0.2.0
-	github.com/lalternativefabrique/cortex v0.62.0
+	github.com/lalternativefabrique/cortex v0.63.0
 	github.com/lalternativefabrique/searchkit/search v0.10.0
 	github.com/nats-io/nats-server/v2 v2.12.6
 	github.com/nats-io/nats.go v1.52.0
@@ -62,6 +62,7 @@ require (
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
