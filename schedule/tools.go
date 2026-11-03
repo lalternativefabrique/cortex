@@ -23,7 +23,8 @@ func Tools(store Store, loc *time.Location, onChange func(context.Context)) []ag
 
 type scheduleArgs struct {
 	Name   string `json:"name" jsonschema:"description=A short name for the task, in kebab-case. Reusing a name replaces that task."`
-	Cron   string `json:"cron" jsonschema:"description=When to run, as five cron fields (minute hour day-of-month month day-of-week) in the person's time zone, or @hourly, @daily, @weekly, @every 2h."`
+	Cron   string `json:"cron,omitempty" jsonschema:"description=When to run again and again: five cron fields (minute hour day-of-month month day-of-week) in the person's time zone, or @hourly, @daily, @weekly, @every 2h. Leave empty for a task that runs once."`
+	At     string `json:"at,omitempty" jsonschema:"description=When to run once, as RFC 3339 with the person's offset, for example 2026-11-10T09:00:00+01:00. Leave empty for a repeating task."`
 	Prompt string `json:"prompt" jsonschema:"description=What to ask yourself each time, written so it stands alone: the run has no other context than its own past runs."`
 }
 
@@ -35,7 +36,7 @@ type scheduleTool struct {
 
 func (t *scheduleTool) Name() string { return "schedule_task" }
 func (t *scheduleTool) Description() string {
-	return "Schedule a task to run on its own at given times, without the person asking: a weekly check, a daily digest, a reminder. Use it when the person asks for something to happen regularly or at a later time. The run gets the prompt and its own past runs, nothing else, so write the prompt to stand alone."
+	return "Schedule a task to run on its own without the person asking: again and again with cron (a weekly check, a daily digest), or once with at (a reminder, something to do later). Use it when the person asks for something to happen regularly or at a later time. The run gets the prompt and its own past runs, nothing else, so write the prompt to stand alone."
 }
 func (t *scheduleTool) InputSchema() any { return scheduleArgs{} }
 func (t *scheduleTool) Execute(ctx context.Context, raw json.RawMessage) (agent.ToolResult, error) {
@@ -43,7 +44,7 @@ func (t *scheduleTool) Execute(ctx context.Context, raw json.RawMessage) (agent.
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return failure("could not parse arguments: %v", err), nil
 	}
-	task := Task{Name: strings.TrimSpace(in.Name), Cron: strings.TrimSpace(in.Cron), Prompt: strings.TrimSpace(in.Prompt)}
+	task := Task{Name: strings.TrimSpace(in.Name), Cron: strings.TrimSpace(in.Cron), At: strings.TrimSpace(in.At), Prompt: strings.TrimSpace(in.Prompt)}
 	if err := task.Valid(); err != nil {
 		return failure("%v", err), nil
 	}
@@ -54,7 +55,7 @@ func (t *scheduleTool) Execute(ctx context.Context, raw json.RawMessage) (agent.
 		t.onChange(ctx)
 	}
 	next, _ := task.Next(time.Now(), t.loc)
-	return agent.ToolResult{Content: fmt.Sprintf("scheduled %q (%s); next run %s", task.Name, task.Cron, next.Format("Mon 2006-01-02 15:04 MST"))}, nil
+	return agent.ToolResult{Content: fmt.Sprintf("scheduled %q (%s); next run %s", task.Name, task.When(), next.Format("Mon 2006-01-02 15:04 MST"))}, nil
 }
 
 type listTool struct {
@@ -77,7 +78,7 @@ func (t *listTool) Execute(ctx context.Context, _ json.RawMessage) (agent.ToolRe
 	}
 	var b strings.Builder
 	for _, task := range tasks {
-		fmt.Fprintf(&b, "- %s (%s)", task.Name, task.Cron)
+		fmt.Fprintf(&b, "- %s (%s)", task.Name, task.When())
 		if task.Paused {
 			b.WriteString(" paused")
 		} else if next, err := task.Next(time.Now(), t.loc); err == nil {

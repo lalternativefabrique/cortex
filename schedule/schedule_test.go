@@ -170,3 +170,51 @@ func TestTheToolsLetTheAgentManageItsTasks(t *testing.T) {
 		t.Fatalf("refreshed %d times: once per write", refreshed)
 	}
 }
+
+func TestAOneShotTaskRunsOnceThenGoesAndALateOneRunsAtOnce(t *testing.T) {
+	ctx := context.Background()
+	if err := (Task{Name: "both", Cron: "@daily", At: "2026-11-10T09:00:00+01:00", Prompt: "x"}).Valid(); err == nil {
+		t.Fatal("cron and at together were accepted")
+	}
+	if err := (Task{Name: "bad", At: "lundi 9h", Prompt: "x"}).Valid(); err == nil {
+		t.Fatal("a time that does not parse was accepted")
+	}
+	soon := time.Now().Add(700 * time.Millisecond).Format(time.RFC3339)
+	store := &memStore{tasks: []Task{
+		{Name: "soon", At: soon, Prompt: "Rappelle le banquier."},
+		{Name: "missed", At: "2026-01-01T09:00:00+01:00", Prompt: "Rappel manqué."},
+	}}
+	var mu sync.Mutex
+	var runs []string
+	r := &Runner{Store: store, Run: func(_ context.Context, task Task) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		runs = append(runs, task.Name)
+		return "ok", nil
+	}, Reload: time.Hour}
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = r.Serve(runCtx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(runs) != 2 || runs[0] != "missed" || runs[1] != "soon" {
+		t.Fatalf("runs = %v", runs)
+	}
+	if left, _ := store.List(ctx); len(left) != 0 {
+		t.Fatalf("one-shot tasks still stored after running: %+v", left)
+	}
+}
+
+func TestTheToolSchedulesAReminderOnce(t *testing.T) {
+	store := &memStore{}
+	tools := Tools(store, time.UTC, nil)
+	res, _ := tools[0].Execute(context.Background(), json.RawMessage(`{"name":"banquier","at":"2099-11-10T09:00:00+01:00","prompt":"Rappelle le banquier."}`))
+	if !strings.HasPrefix(res.Content, `scheduled "banquier" (once at 2099-11-10T09:00:00+01:00); next run Tue 2099-11-10 08:00 UTC`) {
+		t.Fatalf("schedule once: %s", res.Content)
+	}
+	res, _ = tools[1].Execute(context.Background(), nil)
+	if !strings.Contains(res.Content, "- banquier (once at 2099-11-10T09:00:00+01:00) next Tue 2099-11-10 08:00") {
+		t.Fatalf("list: %s", res.Content)
+	}
+}

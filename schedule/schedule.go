@@ -23,8 +23,12 @@ import (
 type Task struct {
 	// Name identifies the task; the conversation it runs in is named after it.
 	Name string `yaml:"name" json:"name"`
-	// Cron is when: five fields, or @hourly, @daily, @weekly, @every 2h.
-	Cron   string `yaml:"cron" json:"cron"`
+	// Cron is when, again and again: five fields, or @hourly, @daily,
+	// @weekly, @every 2h. Empty for a task that runs once, at At.
+	Cron string `yaml:"cron,omitempty" json:"cron,omitempty"`
+	// At is when, once: RFC 3339 with its offset. The task is removed after
+	// it ran; one missed while the agent was down runs as soon as it is up.
+	At     string `yaml:"at,omitempty" json:"at,omitempty"`
 	Prompt string `yaml:"prompt" json:"prompt"`
 	// Paused keeps the task without running it.
 	Paused bool `yaml:"paused,omitempty" json:"paused,omitempty"`
@@ -46,14 +50,45 @@ func (t Task) Valid() error {
 	if strings.TrimSpace(t.Prompt) == "" {
 		return fmt.Errorf("task %q needs a prompt", t.Name)
 	}
-	if _, err := parser.Parse(t.Cron); err != nil {
-		return fmt.Errorf("task %q: %q is not a schedule: %w", t.Name, t.Cron, err)
+	switch {
+	case t.Cron != "" && t.At != "":
+		return fmt.Errorf("task %q: cron or at, not both", t.Name)
+	case t.At != "":
+		if _, err := time.Parse(time.RFC3339, t.At); err != nil {
+			return fmt.Errorf("task %q: %q is not a time (RFC 3339, with its offset): %w", t.Name, t.At, err)
+		}
+	default:
+		if _, err := parser.Parse(t.Cron); err != nil {
+			return fmt.Errorf("task %q: %q is not a schedule: %w", t.Name, t.Cron, err)
+		}
 	}
 	return nil
 }
 
-// Next is when the task runs after now, in loc.
+// Once says whether the task runs a single time.
+func (t Task) Once() bool { return t.At != "" }
+
+// When describes the task's timing for a person.
+func (t Task) When() string {
+	if t.Once() {
+		return "once at " + t.At
+	}
+	return t.Cron
+}
+
+// Next is when the task runs after now, in loc. A task whose time has
+// passed is due now.
 func (t Task) Next(now time.Time, loc *time.Location) (time.Time, error) {
+	if t.Once() {
+		at, err := time.Parse(time.RFC3339, t.At)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if at.Before(now) {
+			return now.In(loc), nil
+		}
+		return at.In(loc), nil
+	}
 	s, err := parser.Parse(t.Cron)
 	if err != nil {
 		return time.Time{}, err

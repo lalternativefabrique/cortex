@@ -15,7 +15,7 @@ go install github.com/lalternativefabrique/cortex/connectors/cmd/cortex@latest
 | MCP | `CORTEX_MCP_CONFIG`, `CORTEX_MCP_SERVERS` (`name=url,...`) |
 | Recall | on this machine by default (`CORTEX_RECALL_PATH`, `CORTEX_RECALL=off`); in lalter with `CORTEX_RECALL_URL`, `CORTEX_RECALL_KEY` |
 | Telegram | `CORTEX_TELEGRAM_TOKEN`, `CORTEX_TELEGRAM_USERS` (user ids allowed to talk, the first as `CORTEX_OWNER`), `CORTEX_TELEGRAM_CHAT` (where tasks deliver) |
-| Schedule | tasks in `~/.config/skode/schedule.yaml` or `CORTEX_SCHEDULE_PATH`, run as `CORTEX_OWNER` (default `owner`); `CORTEX_SCHEDULE=off` runs none |
+| Schedule | tasks in `~/.config/skode/schedule.yaml` or `CORTEX_SCHEDULE_PATH` (`cron:` again and again, `at:` once), run as `CORTEX_OWNER` (default `owner`); `CORTEX_SCHEDULE=off` runs none |
 | Skills | `CORTEX_SKILLS_FILE`, `CORTEX_SKILLS_URL` (typed app actions); `CORTEX_SKILLS_DIR` (Markdown skills opened through `use_skill`, `off` for none) |
 | Web | `CORTEX_TORNAD_URL`, `CORTEX_TORNAD_KEY` |
 | Cluster | `CORTEX_NATS_URL`, `CORTEX_NATS_USER`, `CORTEX_NATS_PASSWORD`, `CORTEX_CONCURRENCY`, `CORTEX_QUEUE_WAIT`, `CORTEX_HISTORY_TTL` (default 7 days) |

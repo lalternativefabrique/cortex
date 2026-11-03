@@ -33,8 +33,10 @@ type Runner struct {
 	Timeout time.Duration
 
 	mu      sync.Mutex
+	loc     *time.Location
 	cron    *cron.Cron
 	entries map[string]cron.EntryID
+	timers  map[string]*time.Timer
 	tasks   map[string]Task
 	running map[string]bool
 }
@@ -50,13 +52,22 @@ func (r *Runner) Serve(ctx context.Context) error {
 		reload = DefaultReload
 	}
 	r.mu.Lock()
+	r.loc = loc
 	r.cron = cron.New(cron.WithParser(parser), cron.WithLocation(loc))
 	r.entries = map[string]cron.EntryID{}
+	r.timers = map[string]*time.Timer{}
 	r.tasks = map[string]Task{}
 	r.running = map[string]bool{}
 	r.mu.Unlock()
 	r.cron.Start()
-	defer func() { <-r.cron.Stop().Done() }()
+	defer func() {
+		<-r.cron.Stop().Done()
+		r.mu.Lock()
+		for _, t := range r.timers {
+			t.Stop()
+		}
+		r.mu.Unlock()
+	}()
 
 	ticker := time.NewTicker(reload)
 	defer ticker.Stop()
@@ -83,16 +94,14 @@ func (r *Runner) Refresh(ctx context.Context) error {
 	if r.cron == nil {
 		return nil
 	}
+	loc := r.loc
 	seen := map[string]bool{}
 	for _, t := range tasks {
 		seen[t.Name] = true
 		if known, ok := r.tasks[t.Name]; ok && known == t {
 			continue
 		}
-		if id, ok := r.entries[t.Name]; ok {
-			r.cron.Remove(id)
-			delete(r.entries, t.Name)
-		}
+		r.unschedule(t.Name)
 		r.tasks[t.Name] = t
 		if t.Paused {
 			continue
@@ -102,6 +111,20 @@ func (r *Runner) Refresh(ctx context.Context) error {
 			continue
 		}
 		task := t
+		if t.Once() {
+			due, _ := t.Next(time.Now(), loc)
+			r.timers[t.Name] = time.AfterFunc(time.Until(due), func() {
+				r.fire(ctx, task)
+				if err := r.Store.Remove(ctx, task.Name); err != nil {
+					slog.Warn("schedule: task not removed after its run", "task", task.Name, "error", err)
+				}
+				r.mu.Lock()
+				delete(r.timers, task.Name)
+				delete(r.tasks, task.Name)
+				r.mu.Unlock()
+			})
+			continue
+		}
 		id, err := r.cron.AddFunc(t.Cron, func() { r.fire(ctx, task) })
 		if err != nil {
 			slog.Warn("schedule: task not scheduled", "task", t.Name, "error", err)
@@ -109,14 +132,24 @@ func (r *Runner) Refresh(ctx context.Context) error {
 		}
 		r.entries[t.Name] = id
 	}
-	for name, id := range r.entries {
+	for name := range r.tasks {
 		if !seen[name] {
-			r.cron.Remove(id)
-			delete(r.entries, name)
+			r.unschedule(name)
 			delete(r.tasks, name)
 		}
 	}
 	return nil
+}
+
+func (r *Runner) unschedule(name string) {
+	if id, ok := r.entries[name]; ok {
+		r.cron.Remove(id)
+		delete(r.entries, name)
+	}
+	if t, ok := r.timers[name]; ok {
+		t.Stop()
+		delete(r.timers, name)
+	}
 }
 
 func (r *Runner) fire(ctx context.Context, t Task) {
