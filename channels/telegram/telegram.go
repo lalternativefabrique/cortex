@@ -250,5 +250,5 @@ func split(text string, n int) []string {
 		out = append(out, strings.TrimRight(text[:cut], "\n "))
 		text = strings.TrimLeft(text[cut:], "\n ")
 	}
-	return append(out, text)
+	return append(out, strings.TrimRight(text, "\n "))
 }
