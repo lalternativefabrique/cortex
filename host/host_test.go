@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -394,5 +396,118 @@ func TestVerifyDecidesTheCallerInPlaceOfTheToken(t *testing.T) {
 	}
 	if seen == "" {
 		t.Fatal("Verify was never asked")
+	}
+}
+
+func TestAFailedTurnNamesNeitherTheModelEndpointNorItsErrorBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider agent.Provider
+		want     string
+		secret   string
+	}{
+		{"unreachable", agent.Provider{BaseURL: "http://127.0.0.1:1/v1", Model: "m"}, "the model endpoint could not be reached", "127.0.0.1:1"},
+		{"provider error", func() agent.Provider {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, `{"error":{"message":"org acme-internal is over quota"}}`, http.StatusInternalServerError)
+			}))
+			t.Cleanup(srv.Close)
+			return agent.Provider{BaseURL: srv.URL + "/v1", Model: "m"}
+		}(), "the model endpoint returned HTTP 500", "acme-internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: tc.provider, Token: "t"})
+			res := rpc(t, srv.URL, "t", "message/send", message("hi", "ctx-"+tc.name, nil))
+			raw, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			if !strings.Contains(string(raw), `"state":"failed"`) {
+				t.Fatalf("response: %s", raw)
+			}
+			if !strings.Contains(string(raw), tc.want) {
+				t.Errorf("the caller is not told %q: %s", tc.want, raw)
+			}
+			if strings.Contains(string(raw), tc.secret) {
+				t.Errorf("the caller sees %q: %s", tc.secret, raw)
+			}
+		})
+	}
+}
+
+func TestAMessageAboveTheTurnsInputBudgetIsRefusedBeforeAnyModelCall(t *testing.T) {
+	provider, bodies := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "t", MaxInputTokens: 1000})
+	res := rpc(t, srv.URL, "t", "message/send", message(strings.Repeat("word ", 5000), "ctx-big", nil))
+	raw, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(raw), `"state":"failed"`) || !strings.Contains(string(raw), "over the 1000") {
+		t.Errorf("response: %.300s", raw)
+	}
+	if len(*bodies) != 0 {
+		t.Errorf("the model was called %d times", len(*bodies))
+	}
+}
+
+func TestAMessageFromAnotherRoleThanTheUserIsRefused(t *testing.T) {
+	provider, bodies := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "t"})
+	msg := message("hi", "ctx-role", nil)
+	msg["role"] = "agent"
+	res := rpc(t, srv.URL, "t", "message/send", msg)
+	raw, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(raw), `"state":"failed"`) || len(*bodies) != 0 {
+		t.Errorf("model calls %d, response: %.300s", len(*bodies), raw)
+	}
+}
+
+func TestA2AAnswersAsJSONAndAStreamAsEvents(t *testing.T) {
+	provider, _ := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "t"})
+	for method, want := range map[string]string{"message/send": "application/json", "message/stream": "text/event-stream", "tasks/get": "application/json"} {
+		res := rpc(t, srv.URL, "t", method, message("hi", "ctx-ct", nil))
+		res.Body.Close()
+		if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, want) {
+			t.Errorf("%s: Content-Type %q, want %q", method, got, want)
+		}
+	}
+}
+
+func TestABodyDeclaredOverTheLimitIsRefusedWith413(t *testing.T) {
+	provider, _ := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "t"})
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "POST /a2a HTTP/1.1\r\nHost: cortex\r\nAuthorization: Bearer t\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n{", MaxRequestBytes+1)
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d", res.StatusCode)
+	}
+}
+
+func TestTheCardAndTheContextReportTheSameVersion(t *testing.T) {
+	provider, _ := fakeModel(t, "")
+	srv := start(t, Config{Agent: Agent{Name: "a"}, Provider: provider, Token: "t"})
+	var card struct {
+		Version string `json:"version"`
+	}
+	var context struct {
+		Version string `json:"version"`
+	}
+	for path, into := range map[string]any{"/.well-known/agent.json": &card, "/context": &context} {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewDecoder(res.Body).Decode(into)
+		res.Body.Close()
+	}
+	if card.Version != "dev" || context.Version != "dev" {
+		t.Errorf("card %q, context %q", card.Version, context.Version)
 	}
 }

@@ -192,8 +192,17 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("GET /skills", h.serveSkills)
 	mux.HandleFunc("GET /context", h.serveContext)
 	mux.Handle("POST /skills/refresh", h.authorized(http.HandlerFunc(h.refreshSkills)))
-	mux.Handle("POST /a2a", h.authorized(watchCaller(h.handler)))
+	mux.Handle("POST /a2a", h.authorized(watchCaller(jsonRPC(h.handler))))
 	return mux
+}
+
+// jsonRPC names the body a2a-go writes without a type; a stream names its
+// own.
+func jsonRPC(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // DefaultMaxInputTokens is what one turn may send to the model in all when
@@ -210,6 +219,10 @@ func (h *Host) authorized(next http.Handler) http.Handler {
 		if !ok || !h.accepts(r.Context(), got) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="cortex"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.ContentLength > MaxRequestBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBytes)
@@ -239,15 +252,11 @@ func (h *Host) Card() a2a.AgentCard {
 	if h.cfg.Recall != nil {
 		skills = append(skills, a2a.AgentSkill{ID: "recall_memory", Name: "recall_memory", Description: "Remembers past conversations with the person.", Tags: []string{"memory"}})
 	}
-	version := h.cfg.Version
-	if version == "" {
-		version = "dev"
-	}
 	return a2a.AgentCard{
 		Name:               h.cfg.Agent.Name,
 		Description:        h.cfg.Agent.Description,
 		URL:                strings.TrimSuffix(h.cfg.PublicURL, "/") + "/a2a",
-		Version:            version,
+		Version:            h.version(),
 		PreferredTransport: a2a.TransportProtocolJSONRPC,
 		Capabilities:       a2a.AgentCapabilities{Streaming: true, Extensions: []a2a.AgentExtension{cortexExtension()}},
 		SecuritySchemes: a2a.NamedSecuritySchemes{
@@ -258,6 +267,13 @@ func (h *Host) Card() a2a.AgentCard {
 		DefaultOutputModes: []string{"text/plain", "application/json"},
 		Skills:             skills,
 	}
+}
+
+func (h *Host) version() string {
+	if h.cfg.Version == "" {
+		return "dev"
+	}
+	return h.cfg.Version
 }
 
 func firstLine(s string) string {
@@ -326,7 +342,7 @@ func (h *Host) Context() AgentContext {
 		Tools:           []string{},
 		MCPServers:      []string{},
 		Memory:          h.cfg.Recall != nil,
-		Version:         h.cfg.Version,
+		Version:         h.version(),
 	}
 	for _, t := range append(append([]agent.Tool(nil), h.cfg.Tools...), h.servers.offered()...) {
 		c.Tools = append(c.Tools, t.Name())

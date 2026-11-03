@@ -349,11 +349,16 @@ func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, e
 	return out, nil
 }
 
+// ErrUnreachable is what every network-level failure to reach the model
+// endpoint matches with errors.Is, whatever the underlying cause.
+var ErrUnreachable = errors.New("the model endpoint could not be reached")
+
 // transportError marks a network-level failure, always retryable.
 type transportError struct{ err error }
 
-func (e *transportError) Error() string { return "transport: " + e.err.Error() }
-func (e *transportError) Unwrap() error { return e.err }
+func (e *transportError) Error() string        { return "transport: " + e.err.Error() }
+func (e *transportError) Unwrap() error        { return e.err }
+func (e *transportError) Is(target error) bool { return target == ErrUnreachable }
 
 // APIError is a non-2xx response from the provider.
 type APIError struct {
