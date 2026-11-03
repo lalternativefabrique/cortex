@@ -19,7 +19,10 @@ const (
 	DefaultWindow      = 30 * 24 * time.Hour
 	DefaultMaxSignals  = 40
 	DefaultMaxPerFacet = 6
-	maxFactBytes       = 200
+	// DefaultCooldown is how long one person's derivations wait for each
+	// other: their signals keep accumulating, the model is asked once.
+	DefaultCooldown = 10 * time.Minute
+	maxFactBytes    = 200
 	// MaxSignalBytes bounds what one signal carries into a derivation, and
 	// what a host should keep of a message when it observes one.
 	MaxSignalBytes = 400
@@ -38,7 +41,10 @@ type Deriver struct {
 	// MaxPerFacet bounds the valid facts of one facet; an assertion past it
 	// is dropped. Zero means DefaultMaxPerFacet.
 	MaxPerFacet int
-	Now         func() time.Time
+	// Cooldown is the least time between two derivations of one person.
+	// Zero means DefaultCooldown; a negative value derives on every call.
+	Cooldown time.Duration
+	Now      func() time.Time
 }
 
 type assertion struct {
@@ -88,7 +94,10 @@ func (d *Deriver) Learn(ctx context.Context, scope Scope) (int, error) {
 	if d.Now != nil {
 		now = d.Now
 	}
-	window, maxSignals, maxPerFacet := d.Window, d.MaxSignals, d.MaxPerFacet
+	window, maxSignals, maxPerFacet, cooldown := d.Window, d.MaxSignals, d.MaxPerFacet, d.Cooldown
+	if cooldown == 0 {
+		cooldown = DefaultCooldown
+	}
 	if window <= 0 {
 		window = DefaultWindow
 	}
@@ -98,8 +107,12 @@ func (d *Deriver) Learn(ctx context.Context, scope Scope) (int, error) {
 	if maxPerFacet <= 0 {
 		maxPerFacet = DefaultMaxPerFacet
 	}
-	unlock := lockSubject(scope.Subject)
+	key := fmt.Sprintf("%p/%s", d.Store, scope.Subject)
+	unlock := lockSubject(key)
 	defer unlock()
+	if last, ok := lastLearned.Load(key); ok && cooldown > 0 && now().Sub(last.(time.Time)) < cooldown {
+		return 0, nil
+	}
 	signals, err := d.Store.Signals(ctx, scope, now().Add(-window), maxSignals)
 	if err != nil {
 		return 0, fmt.Errorf("profile: read signals: %w", err)
@@ -119,6 +132,7 @@ func (d *Deriver) Learn(ctx context.Context, scope Scope) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("profile: derive: %w", err)
 	}
+	lastLearned.Store(key, now())
 	up, ok := extractUpdate(resp.ToolCalls)
 	if !ok {
 		return 0, nil
@@ -228,10 +242,10 @@ func knownFacet(f Facet) bool {
 
 // learning serialises the derivations of one person: two at once would each
 // miss what the other asserts and write the same fact twice.
-var learning sync.Map
+var learning, lastLearned sync.Map
 
-func lockSubject(subject string) func() {
-	mu, _ := learning.LoadOrStore(subject, &sync.Mutex{})
+func lockSubject(key string) func() {
+	mu, _ := learning.LoadOrStore(key, &sync.Mutex{})
 	mu.(*sync.Mutex).Lock()
 	return mu.(*sync.Mutex).Unlock
 }

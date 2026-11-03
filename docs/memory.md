@@ -3,7 +3,7 @@
 | Package | Holds | Backend |
 | --- | --- | --- |
 | `recall` | Memory across conversations, scoped by subject and agent; `recall_memory` tool | `recall.Store` interface; `connectors/recall/lalter` is one store. Nil means no memory |
-| `profile` | What the agent knows of the person: tone, workflow, preferences, context, level, taste, learned from what they say, edit and do, told to the model on every turn that names a subject | `profile.Store` interface; `profile.FileStore` keeps one machine's on disk. Nil learns nothing |
+| `profile` | What the agent knows of the person: tone, workflow, preferences, context, level, taste, learned from what they say, edit and do, told to the model on every turn that names a subject, derived at most once per DefaultCooldown per person | `profile.Store` interface; `profile.FileStore` keeps one machine's on disk. Nil learns nothing |
 | `memory` | Notes extracted by compaction, per project | Files under `$XDG_STATE_HOME/skode/memory` or `~/.local/state/skode/memory` |
 | `session` | Resumable conversations | One JSONL per session under `skode/sessions` |
 | `host.History` | Conversations between turns | In memory by default, or NATS KV |

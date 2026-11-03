@@ -32,6 +32,7 @@ import (
 	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/memory"
+	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/promptctx"
 	"github.com/lalternativefabrique/cortex/recall"
 	"github.com/lalternativefabrique/cortex/sandbox"
@@ -61,6 +62,9 @@ type Config struct {
 	Recall recall.Store
 	// Journal, when set, is handed each finished turn once, answered or not.
 	Journal Journal
+	// Profile, when set, is what this machine knows of its person: read into
+	// every turn, learned from each one after it answers.
+	Profile profile.Store
 	// Provider is the model this machine calls. Calling it from here rather
 	// than through the server keeps the repository's contents on this machine:
 	// what leaves is the conversation, not the code.
@@ -140,6 +144,7 @@ type Server struct {
 	// mcpSession holds the connections to whatever Config.MCP named, so
 	// Close can shut them down. Nil when no server was configured.
 	mcpSession *mcp.Session
+	learning   sync.WaitGroup
 	// describer is set when a vision model is configured, and is what turns a
 	// pasted screenshot into something the conversation can carry.
 	describer tools.Describer
@@ -314,6 +319,7 @@ func (s *Server) Close() {
 	if c, ok := s.cfg.Sandbox.(io.Closer); ok {
 		_ = c.Close()
 	}
+	s.learning.Wait()
 }
 
 // Listen binds the address and returns the listener, so the caller can print
@@ -631,6 +637,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		sink.memory = recall.NewRecorder(r.Context(), s.cfg.Recall, recall.Scope{}, id)
 		sink.memory.Said(uuid.NewString(), "user", question)
 	}
+	s.observe(r.Context(), id, question, conv.incognito)
 	var answer, failure string
 	defer func() {
 		if conv.incognito {
@@ -684,7 +691,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		Tools:        s.withReadAttachment(withoutMemory(s.turnTools(client, req.DeepResearch, researched), conv.incognito), files),
 		Deferred:     deferredWithoutMemory(s.deferredTools(), conv.incognito),
 		Steer:        steer,
-		System:       s.system(req.System, conv.incognito),
+		System:       s.withProfile(r.Context(), s.system(req.System, conv.incognito), conv.incognito),
 		MaxSteps:     steps,
 		CloseOnBound: true,
 		// Without it the history only grows, and a long conversation ends
@@ -709,6 +716,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	answer = res.Text
 	res.Usage.Add(researched.total())
+	s.learn(r.Context(), client, conv.incognito)
 	sink.memory.Said(uuid.NewString(), "assistant", res.Text)
 	s.mu.Lock()
 	for _, text := range steered {
