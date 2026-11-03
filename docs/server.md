@@ -14,7 +14,7 @@ go install github.com/lalternativefabrique/cortex/connectors/cmd/cortex@latest
 | Auth | `CORTEX_TOKEN`, `CORTEX_ISSUER_URL`, `CORTEX_AUDIENCE`, `CORTEX_JWKS_URL`, `CORTEX_CALLERS`, `CORTEX_PUBLIC_URL` |
 | MCP | `CORTEX_MCP_CONFIG`, `CORTEX_MCP_SERVERS` (`name=url,...`) |
 | Recall | on this machine by default (`CORTEX_RECALL_PATH`, `CORTEX_RECALL=off`); in lalter with `CORTEX_RECALL_URL`, `CORTEX_RECALL_KEY` |
-| Skills | `CORTEX_SKILLS_FILE`, `CORTEX_SKILLS_URL` |
+| Skills | `CORTEX_SKILLS_FILE`, `CORTEX_SKILLS_URL` (typed app actions); `CORTEX_SKILLS_DIR` (Markdown skills opened through `use_skill`, `off` for none) |
 | Web | `CORTEX_TORNAD_URL`, `CORTEX_TORNAD_KEY` |
 | Cluster | `CORTEX_NATS_URL`, `CORTEX_NATS_USER`, `CORTEX_NATS_PASSWORD`, `CORTEX_CONCURRENCY`, `CORTEX_QUEUE_WAIT`, `CORTEX_HISTORY_TTL` (default 7 days) |
 | Telemetry | `SKALPAI_ENDPOINT`, `SKALPAI_API_KEY` |

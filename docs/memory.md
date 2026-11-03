@@ -10,6 +10,6 @@
 
 ## Skills
 
-`skills` loads Markdown instructions with frontmatter from `~/.config/skode/skills`, `~/.claude/skills`, then `.ai/skills`. The repository wins.
+`skills` loads Markdown instructions with frontmatter from `~/.config/skode/skills`, `~/.claude/skills`, then `.ai/skills`. The repository wins. `skills.NewTool` offers them to the model as `use_skill`: every name and description on every step, one skill's instructions when the task calls for it. The server reads them from those directories and `CORTEX_SKILLS_DIR` (`off` offers none).
 
 `skill` is for apps: `Declare[In, Out]` declares a typed action, and `WriteCatalog` or `WriteFile` produce the `skills.json` the server reads from `CORTEX_SKILLS_FILE` or `CORTEX_SKILLS_URL`.

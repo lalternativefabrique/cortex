@@ -231,6 +231,9 @@ func New(cfg Config) (*Server, error) {
 		srv.skills = available
 		srv.tools = codingTools(cfg)
 	}
+	if t := skills.NewTool(srv.skills); t != nil {
+		srv.tools = append(srv.tools, t)
+	}
 	if cfg.Describer != nil {
 		srv.describer = cfg.Describer
 		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
