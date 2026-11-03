@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/connectors/cluster"
 	lalterrecall "github.com/lalternativefabrique/cortex/connectors/recall/lalter"
+	sqliterecall "github.com/lalternativefabrique/cortex/connectors/recall/sqlite"
 	"github.com/lalternativefabrique/cortex/host"
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/profile"
@@ -39,6 +41,9 @@ func run() error {
 	cfg, addr, err := configFromEnv()
 	if err != nil {
 		return err
+	}
+	if c, ok := cfg.Recall.(io.Closer); ok {
+		defer c.Close()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -151,7 +156,10 @@ func configFromEnv() (host.Config, string, error) {
 		return cfg, "", err
 	}
 	cfg.MCP.Servers = append(cfg.MCP.Servers, servers...)
-	cfg.Recall = recallFromEnv()
+	cfg.Recall, err = recallFromEnv()
+	if err != nil {
+		return cfg, "", err
+	}
 	if os.Getenv("CORTEX_PROFILE") != "off" {
 		store, err := profile.NewFileStore()
 		if err != nil {
@@ -181,20 +189,30 @@ func mcpServersFromEnv(raw string) ([]mcp.ServerConfig, error) {
 	return servers, nil
 }
 
-// recallFromEnv keeps the agent's memory in lalter when CORTEX_RECALL_URL
-// names lalter's API; the key defaults to the model key, one app key with
-// both the llm and recall scopes. A turn its caller lent a token to calls
-// under that token instead.
-func recallFromEnv() recall.Store {
-	base := strings.TrimSpace(os.Getenv("CORTEX_RECALL_URL"))
-	if base == "" {
-		return nil
+// recallFromEnv keeps the agent's memory on this machine, in SQLite under
+// the state directory or CORTEX_RECALL_PATH, unless CORTEX_RECALL is off.
+// CORTEX_RECALL_URL keeps it in lalter instead; that key defaults to the
+// model key, one app key with both the llm and recall scopes, and a turn
+// its caller lent a token to calls under that token.
+func recallFromEnv() (recall.Store, error) {
+	if base := strings.TrimSpace(os.Getenv("CORTEX_RECALL_URL")); base != "" {
+		return lalterrecall.New(lalterrecall.Config{
+			BaseURL: base,
+			AppKey:  envOr("CORTEX_RECALL_KEY", os.Getenv("CORTEX_API_KEY")),
+			Client:  &http.Client{Timeout: 15 * time.Second, Transport: lentToken{}},
+		}), nil
 	}
-	return lalterrecall.New(lalterrecall.Config{
-		BaseURL: base,
-		AppKey:  envOr("CORTEX_RECALL_KEY", os.Getenv("CORTEX_API_KEY")),
-		Client:  &http.Client{Timeout: 15 * time.Second, Transport: lentToken{}},
-	})
+	if os.Getenv("CORTEX_RECALL") == "off" {
+		return nil, nil
+	}
+	path := strings.TrimSpace(os.Getenv("CORTEX_RECALL_PATH"))
+	if path == "" {
+		var err error
+		if path, err = sqliterecall.DefaultPath(); err != nil {
+			return nil, err
+		}
+	}
+	return sqliterecall.Open(path)
 }
 
 // lentToken presents the token the turn's caller lent, when it lent one, in
