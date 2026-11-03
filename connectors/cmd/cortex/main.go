@@ -15,13 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lalternative/packages/go/svcauth"
 	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/connectors/cluster"
 	lalterrecall "github.com/lalternativefabrique/cortex/connectors/recall/lalter"
 	"github.com/lalternativefabrique/cortex/host"
 	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
-	"github.com/lalternative/packages/go/svcauth"
 )
 
 var version = "dev"
@@ -151,6 +152,14 @@ func configFromEnv() (host.Config, string, error) {
 	}
 	cfg.MCP.Servers = append(cfg.MCP.Servers, servers...)
 	cfg.Recall = recallFromEnv()
+	if os.Getenv("CORTEX_PROFILE") != "off" {
+		store, err := profile.NewFileStore()
+		if err != nil {
+			slog.Warn("profile unavailable", "error", err)
+		} else {
+			cfg.Profile = store
+		}
+	}
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
 }
 

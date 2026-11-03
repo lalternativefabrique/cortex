@@ -90,9 +90,10 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		tools = append(tools, recall.NewTool(h.cfg.Recall, scope))
 		memory = recall.NewRecorder(ctx, h.cfg.Recall, scope, turn.ContextID)
 	}
+	person := h.personOf(subject, meta)
 	provider := h.cfg.Provider
 	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: max(h.cfg.MaxInputTokens, 0)}
-	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
+	base := h.withProfile(ctx, log, instructions(h.cfg.Agent.Instructions, h.appInstructionsNow()), person)
 	system := instructions(base, turnContext)
 	schema, hasSchema := outputSchema(meta)
 	if name := skillName; strings.TrimSpace(name) != "" {
@@ -168,6 +169,8 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	}
 	history := append(past, asking)
 	memory.Said(turn.Message.ID, "user", asked)
+	h.observe(ctx, log, person, turn, asked)
+	stream.learn = func() { h.learn(ctx, log, client, person) }
 
 	runWith := withAttacher(mcp.WithHeaders(runCtx, headers), stream)
 	res, err := runner.Run(runWith, history)
@@ -179,6 +182,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	}
 	h.remember(ctx, log, conversation, asking, res.Text)
 	memory.Said(uuid.NewString(), "assistant", res.Text)
+	stream.learn()
 
 	if err := stream.close(res.Text); err != nil {
 		return err
@@ -205,6 +209,7 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 		if answer, ok := respond.recorded(); ok {
 			h.remember(ctx, slog.Default(), conversation, asking, string(answer))
 			stream.memory.Said(uuid.NewString(), "assistant", string(answer))
+			stream.learn()
 			if err := stream.data(answer); err != nil {
 				return err
 			}
@@ -364,6 +369,8 @@ type stream struct {
 	emit   Emit
 	task   Turn
 	memory *recall.Recorder
+	// learn derives the person's profile once the answer is recorded.
+	learn  func()
 	answer a2a.ArtifactID
 	// structured holds text back: the answer is what respond records.
 	structured bool

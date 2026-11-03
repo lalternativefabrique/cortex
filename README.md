@@ -85,7 +85,7 @@ res, err := r.Run(ctx, []agent.Message{{Role: agent.RoleUser, Content: "hi"}})
 | `tools` | File, shell and research tools, approvals, secret handling |
 | `sandbox` | Where model-decided commands execute |
 | `mcp` | Tools from Model Context Protocol servers |
-| `recall`, `memory`, `session` | Memory across conversations, compaction notes, resumable runs |
+| `recall`, `profile`, `memory`, `session` | Memory across conversations, what the agent knows of the person, compaction notes, resumable runs |
 | `skill`, `skills` | Typed app actions, and Markdown skills invoked by name |
 | `connectors` | Separate module: NATS cluster, web, vision, the `cortex` server |
 

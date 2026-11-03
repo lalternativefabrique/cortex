@@ -18,6 +18,7 @@ import (
 
 	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
 	"github.com/lalternativefabrique/cortex/tools"
 )
@@ -80,6 +81,9 @@ type Config struct {
 	AppInstructions string
 	// Recall nil keeps no memory; recall_memory is offered only with it.
 	Recall recall.Store
+	// Profile nil learns nothing of the person; with it, a turn that names a
+	// subject reads their profile, observes what they say and learns after.
+	Profile profile.Store
 	// Token is what every caller of /a2a presents as Bearer. Empty refuses
 	// everyone, unless Verify is set.
 	Token string
@@ -132,6 +136,7 @@ type Host struct {
 	turns           Turns
 	history         History
 	handler         http.Handler
+	learning        sync.WaitGroup
 }
 
 func New(ctx context.Context, cfg Config) (*Host, error) {
@@ -171,6 +176,7 @@ func (h *Host) Serve(ctx context.Context) error {
 // Close stops the MCP servers the host started.
 func (h *Host) Close() {
 	h.servers.close()
+	h.learning.Wait()
 }
 
 // Handler serves the Agent Card, /a2a and /health.
