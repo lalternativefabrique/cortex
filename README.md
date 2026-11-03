@@ -86,7 +86,7 @@ res, err := r.Run(ctx, []agent.Message{{Role: agent.RoleUser, Content: "hi"}})
 | `sandbox` | Where model-decided commands execute |
 | `mcp` | Tools from Model Context Protocol servers |
 | `channels/telegram` | Talk to the agent from Telegram, by long polling; scheduled tasks deliver there |
-| `schedule` | Tasks the agent runs on its own, at the times a cron expression names; the agent schedules them itself when asked |
+| `schedule` | Tasks the agent runs on its own, again and again on a cron expression or once at a time; the agent schedules them itself when asked |
 | `recall`, `profile`, `memory`, `session` | Memory across conversations, what the agent knows of the person, compaction notes, resumable runs |
 | `skill`, `skills` | Typed app actions, and Markdown skills invoked by name |
 | `connectors` | Separate module: NATS cluster, web, vision, the `cortex` server |
