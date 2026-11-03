@@ -2,7 +2,7 @@
 
 | Package | Holds | Backend |
 | --- | --- | --- |
-| `recall` | Memory across conversations, scoped by subject and agent; `recall_memory` tool | `recall.Store` interface; `connectors/recall/lalter` is one store. Nil means no memory |
+| `recall` | Memory across conversations, scoped by subject and agent; `recall_memory` tool | `recall.Store` interface; `connectors/recall/sqlite` keeps it on the machine, `connectors/recall/lalter` in lalter. Nil means no memory |
 | `memory` | Notes extracted by compaction, per project | Files under `$XDG_STATE_HOME/skode/memory` or `~/.local/state/skode/memory` |
 | `session` | Resumable conversations | One JSONL per session under `skode/sessions` |
 | `host.History` | Conversations between turns | In memory by default, or NATS KV |
