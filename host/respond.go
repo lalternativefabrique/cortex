@@ -89,9 +89,16 @@ const respondReminder = "You did not call respond. Call respond now with your an
 // asked again to call respond before it fails.
 const maxRespondReminders = 2
 
-func outputSchema(meta map[string]any) (map[string]any, bool) {
-	schema, ok := meta[OutputSchemaKey].(map[string]any)
-	return schema, ok && len(schema) > 0
+func outputSchema(meta map[string]any) (map[string]any, bool, error) {
+	raw, present := meta[OutputSchemaKey]
+	if !present || raw == nil {
+		return nil, false, nil
+	}
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("%s must be a JSON Schema object", OutputSchemaKey)
+	}
+	return schema, len(schema) > 0, nil
 }
 
 func withRespondInstruction(system string) string {

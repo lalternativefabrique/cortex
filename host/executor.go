@@ -3,8 +3,10 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +59,14 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		logTaskEnd(ctx, log, state, why, time.Since(started))
 		return finish(ctx, emit, turn, state, why)
 	}
+	fail := func(err error) error {
+		logTaskEnd(ctx, log, a2a.TaskStateFailed, err.Error(), time.Since(started))
+		return finish(ctx, emit, turn, a2a.TaskStateFailed, callerMessage(err))
+	}
+
+	if turn.Message.Role != a2a.MessageRoleUser {
+		return end(a2a.TaskStateFailed, "the message must come from the user")
+	}
 
 	files, err := messageFiles(turn.Message)
 	if err != nil {
@@ -94,7 +104,10 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: max(h.cfg.MaxInputTokens, 0)}
 	base := instructions(h.cfg.Agent.Instructions, h.appInstructionsNow())
 	system := instructions(base, turnContext)
-	schema, hasSchema := outputSchema(meta)
+	schema, hasSchema, err := outputSchema(meta)
+	if err != nil {
+		return end(a2a.TaskStateFailed, err.Error())
+	}
 	if name := skillName; strings.TrimSpace(name) != "" {
 		_, skills := h.declaredSkills()
 		declared, ok := skills[strings.TrimSpace(name)]
@@ -160,6 +173,9 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	}
 
 	asked = withFilesNote(asked, files)
+	if bounds.inputTokens > 0 && agent.EstimateTokens(asked) > bounds.inputTokens {
+		return end(a2a.TaskStateFailed, fmt.Sprintf("the message alone is about %d tokens, over the %d this turn may send to the model", agent.EstimateTokens(asked), bounds.inputTokens))
+	}
 	asking := agent.Message{Role: agent.RoleUser, Content: asked}
 	conversation := turn.Conversation()
 	past, err := h.history.Load(ctx, conversation)
@@ -172,10 +188,10 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	runWith := withAttacher(mcp.WithHeaders(runCtx, headers), stream)
 	res, err := runner.Run(runWith, history)
 	if respond != nil {
-		return h.endStructured(ctx, end, stream, respond, runnerFor, bounds, runWith, conversation, asking, history, res, err)
+		return h.endStructured(ctx, end, fail, stream, respond, runnerFor, bounds, runWith, conversation, asking, history, res, err)
 	}
 	if err != nil {
-		return end(a2a.TaskStateFailed, err.Error())
+		return fail(err)
 	}
 	h.remember(ctx, log, conversation, asking, res.Text)
 	memory.Said(uuid.NewString(), "assistant", res.Text)
@@ -197,7 +213,7 @@ func (h *Host) remember(ctx context.Context, log *slog.Logger, conversation stri
 // to call respond, a bounded number of times, each on the few steps a
 // reminder needs and on what is left of the turn's token budget: a reminder
 // is not a fresh run.
-func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, stream *stream, respond *respondTool,
+func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string) error, fail func(error) error, stream *stream, respond *respondTool,
 	runnerFor func(runBounds) (*agent.Runner, error), bounds runBounds, runCtx context.Context, conversation string, asking agent.Message, history []agent.Message, res agent.Result, err error,
 ) error {
 	spent := res.Usage.Input
@@ -211,7 +227,7 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 			return end(a2a.TaskStateCompleted, "")
 		}
 		if err != nil {
-			return end(a2a.TaskStateFailed, err.Error())
+			return fail(err)
 		}
 		if reminders == maxRespondReminders {
 			return end(a2a.TaskStateFailed, "the agent did not answer in the required format")
@@ -222,7 +238,7 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 		}
 		runner, runnerErr := runnerFor(left)
 		if runnerErr != nil {
-			return end(a2a.TaskStateFailed, runnerErr.Error())
+			return fail(runnerErr)
 		}
 		history = append(history,
 			agent.Message{Role: agent.RoleAssistant, Content: res.Text},
@@ -280,6 +296,19 @@ func turnLogger(h *Host, turn Turn) *slog.Logger {
 		"context_id", turn.ContextID,
 		"task_id", string(turn.TaskID),
 	)
+}
+
+// callerMessage is what a failed turn tells its caller: a model endpoint's
+// address and its error bodies stay in the log.
+func callerMessage(err error) string {
+	var api *agent.APIError
+	switch {
+	case errors.Is(err, agent.ErrUnreachable):
+		return agent.ErrUnreachable.Error()
+	case errors.As(err, &api) && api.StatusCode != http.StatusUnauthorized:
+		return fmt.Sprintf("the model endpoint returned HTTP %d", api.StatusCode)
+	}
+	return err.Error()
 }
 
 func logTaskEnd(ctx context.Context, log *slog.Logger, state a2a.TaskState, why string, took time.Duration) {

@@ -238,3 +238,14 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+func TestASchemaThatIsNotAnObjectFailsTheTurnAtOnce(t *testing.T) {
+	for _, schema := range []any{"not a schema", 42, []any{"object"}} {
+		provider, bodies := scriptedModel(t, scriptedReply{text: "x"})
+		srv := start(t, Config{Agent: Agent{Name: "partage"}, Provider: provider, Token: "t"})
+		events := readStream(t, rpc(t, srv.URL, "t", "message/stream", message("x", "ctx-bad", map[string]any{OutputSchemaKey: schema})))
+		if finalState(events) != "failed" || len(*bodies) != 0 {
+			t.Errorf("outputSchema %v: state %q after %d model calls", schema, finalState(events), len(*bodies))
+		}
+	}
+}

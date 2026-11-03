@@ -52,7 +52,7 @@ Per-turn `mcpHeaders` reach MCP calls and never the model. A header given as `{"
 
 ## Inbound authentication
 
-`host` uses a bearer token compared in constant time, or a `Verify` callback, and reads at most `MaxRequestBytes` (64 MiB) of a request. A turn sends at most `MaxInputTokens` to the model, `DefaultMaxInputTokens` when unset. In-memory history keeps 2000 conversations of at most 1000 messages. `serve` generates its token when given none and compares it in constant time. `/health`, the agent card, `GET /skills` and `GET /context` are unauthenticated. The `cortex` server requires `CORTEX_TOKEN` or `CORTEX_ISSUER_URL`, and `CORTEX_CALLERS` restricts JWT clients.
+`host` uses a bearer token compared in constant time, or a `Verify` callback, and reads at most `MaxRequestBytes` (64 MiB) of a request, refusing a larger declared body with 413. A message estimated above `MaxInputTokens` (`DefaultMaxInputTokens` when unset) is refused before any model call; across a turn's steps the bound is enforced from the usage the model reports. A failed turn tells its caller that the model endpoint was unreachable or which HTTP status it returned, never its address or its error body. In-memory history keeps 2000 conversations of at most 1000 messages. `serve` generates its token when given none and compares it in constant time. `/health`, the agent card, `GET /skills` and `GET /context` are unauthenticated. The `cortex` server requires `CORTEX_TOKEN` or `CORTEX_ISSUER_URL`, and `CORTEX_CALLERS` restricts JWT clients.
 
 ## Network
 
