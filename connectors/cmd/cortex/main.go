@@ -23,6 +23,7 @@ import (
 	sqliterecall "github.com/lalternativefabrique/cortex/connectors/recall/sqlite"
 	"github.com/lalternativefabrique/cortex/host"
 	"github.com/lalternativefabrique/cortex/mcp"
+	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
 )
 
@@ -158,6 +159,14 @@ func configFromEnv() (host.Config, string, error) {
 	cfg.Recall, err = recallFromEnv()
 	if err != nil {
 		return cfg, "", err
+	}
+	if os.Getenv("CORTEX_PROFILE") != "off" {
+		store, err := profile.NewFileStore()
+		if err != nil {
+			slog.Warn("profile unavailable", "error", err)
+		} else {
+			cfg.Profile = store
+		}
 	}
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
 }
