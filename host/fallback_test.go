@@ -25,7 +25,14 @@ func TestATurnFallsBackToTheNextModelWhenTheFirstRefuses(t *testing.T) {
 	events := readStream(t, rpc(t, srv.URL, "t", "message/stream", message("bonjour", "ctx-fb", nil)))
 	var answer strings.Builder
 	for _, ev := range events {
-		answer.WriteString(ev.Text)
+		if ev.Artifact.Name != "answer" {
+			continue
+		}
+		for _, p := range ev.Artifact.Parts {
+			if text, _ := p["text"].(string); text != "" {
+				answer.WriteString(text)
+			}
+		}
 	}
 	if !strings.Contains(answer.String(), "depuis le secours") {
 		t.Fatalf("answer = %q, events = %+v", answer.String(), events)
