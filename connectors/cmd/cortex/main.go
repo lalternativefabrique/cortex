@@ -19,6 +19,7 @@ import (
 
 	"github.com/lalternative/packages/go/svcauth"
 	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/channels/telegram"
 	"github.com/lalternativefabrique/cortex/connectors/cluster"
 	lalterrecall "github.com/lalternativefabrique/cortex/connectors/recall/lalter"
 	sqliterecall "github.com/lalternativefabrique/cortex/connectors/recall/sqlite"
@@ -58,6 +59,22 @@ func run() error {
 	if tasks != nil {
 		cfg.Tools = append(cfg.Tools, schedule.Tools(tasks.Store, nil, func(ctx context.Context) { _ = tasks.Refresh(ctx) })...)
 	}
+	bot, err := telegramFromEnv(func(ctx context.Context, subject, conversation, text string) (string, error) {
+		return h.Ask(ctx, subject, conversation, text)
+	})
+	if err != nil {
+		return err
+	}
+	if tasks != nil && bot != nil {
+		tasks.Deliver = func(ctx context.Context, t schedule.Task, answer string, err error) {
+			if err != nil {
+				answer = fmt.Sprintf("La tâche %q a échoué : %v", t.Name, err)
+			}
+			if err := bot.Deliver(ctx, answer); err != nil {
+				slog.Warn("schedule: answer not delivered", "task", t.Name, "error", err)
+			}
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -90,6 +107,9 @@ func run() error {
 	defer h.Close()
 	if tasks != nil {
 		go func() { _ = tasks.Serve(ctx) }()
+	}
+	if bot != nil {
+		go func() { _ = bot.Serve(ctx) }()
 	}
 	if err := spread.start(ctx, h); err != nil {
 		return err
@@ -196,6 +216,46 @@ func configFromEnv() (host.Config, string, error) {
 		}
 	}
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
+}
+
+// telegramFromEnv lets the people CORTEX_TELEGRAM_USERS names talk to the
+// agent through the bot CORTEX_TELEGRAM_TOKEN. The first user named talks
+// as CORTEX_OWNER, the others as tg:<id>. CORTEX_TELEGRAM_CHAT, when set,
+// is where scheduled tasks deliver; otherwise the owner's last chat.
+func telegramFromEnv(ask telegram.Ask) (*telegram.Bot, error) {
+	token := strings.TrimSpace(os.Getenv("CORTEX_TELEGRAM_TOKEN"))
+	if token == "" {
+		return nil, nil
+	}
+	var users []int64
+	for _, raw := range splitList(os.Getenv("CORTEX_TELEGRAM_USERS")) {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("CORTEX_TELEGRAM_USERS: %q is not a user id", raw)
+		}
+		users = append(users, id)
+	}
+	if len(users) == 0 {
+		return nil, fmt.Errorf("CORTEX_TELEGRAM_USERS names who may talk to the bot; without it the bot answers no one")
+	}
+	var chat int64
+	if raw := strings.TrimSpace(os.Getenv("CORTEX_TELEGRAM_CHAT")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("CORTEX_TELEGRAM_CHAT: %q is not a chat id", raw)
+		}
+		chat = id
+	}
+	owner := envOr("CORTEX_OWNER", "owner")
+	return telegram.New(telegram.Config{
+		Token: token, Allowed: users, DeliverChat: chat, Ask: ask,
+		Subject: func(id int64) string {
+			if id == users[0] {
+				return owner
+			}
+			return "tg:" + strconv.FormatInt(id, 10)
+		},
+	})
 }
 
 // scheduleFromEnv keeps the agent's scheduled tasks in CORTEX_SCHEDULE_PATH,
