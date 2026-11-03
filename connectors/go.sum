@@ -95,8 +95,8 @@ github.com/lalternative/packages/skalpai/sdk-go v0.10.0 h1:crb+LB4mQ/TqnQ3IxI1Nr
 github.com/lalternative/packages/skalpai/sdk-go v0.10.0/go.mod h1:ROSldQYaYqgLKAdyGkFJnmU7TTb/aLn+9R3xeKACUJA=
 github.com/lalternative/packages/tornad/sdk-go v0.2.0 h1:rw2p9QUF+7NQiGSS3AvfyCaDpUVXriv0RBfWUzquVnQ=
 github.com/lalternative/packages/tornad/sdk-go v0.2.0/go.mod h1:K3BjVthlRJjVn5zxoGsogJPFjpwjFxypPdVI+G51dxY=
-github.com/lalternativefabrique/cortex v0.62.0 h1:VsZnuKM8J7Fso1l7zaOa9qD2Q0grQCN/eoG8+EeEOSw=
-github.com/lalternativefabrique/cortex v0.62.0/go.mod h1:cESJEF9eiOq1c5UBwPjgIXwjxj6QXHg+1Z6YX8tCgb4=
+github.com/lalternativefabrique/cortex v0.63.0 h1:sNa5ruSnSt2cWiPlsJthgrLBeKDPQiR32Ou2Hky/IlM=
+github.com/lalternativefabrique/cortex v0.63.0/go.mod h1:8DocEnaW7CHCez3myCS3tRNgvcWhh5bwqam4favIX24=
 github.com/lalternativefabrique/searchkit/fileguard v0.6.0 h1:9gnpJ/50uEM6U+LWco4S8OEYHLNHpOaE0dC1xox3Z3g=
 github.com/lalternativefabrique/searchkit/fileguard v0.6.0/go.mod h1:8YK8FwoVc25YS6AiHLkWNBt22zj3fb58Jv8B86ir/c4=
 github.com/lalternativefabrique/searchkit/search v0.10.0 h1:1nwvS8HRzs0jl0+h98uyp1G4hO7IfBX+43/CfgzSUrM=
@@ -159,6 +159,8 @@ github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9/go.mod h1:bCqn
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rivo/uniseg v0.1.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
+github.com/robfig/cron/v3 v3.0.1 h1:WdRxkvbJztn8LMz/QEvLN5sBU+xKpSqwwUO1Pjr4qDs=
+github.com/robfig/cron/v3 v3.0.1/go.mod h1:eQICP3HwyT7UooqI/z+Ov+PtYAWygg1TEWWzGIFLtro=
 github.com/rogpeppe/go-internal v1.16.0 h1:O9DK+vNMDVGLr2BeZqmpLeMjiMNkuXfcqntWbZV6S5g=
 github.com/rogpeppe/go-internal v1.16.0/go.mod h1:DrUVZyrJU+txYW5/1kwtXQSMFio52ZOxX7yM1VHvnxs=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 h1:1EYB5IzjZawrrnELUi78f9fPu57HuXjmddZPjrls/28=
