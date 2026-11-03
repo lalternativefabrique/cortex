@@ -38,7 +38,7 @@ func (h *Host) observe(ctx context.Context, log *slog.Logger, person *profile.Sc
 	}
 	err := h.cfg.Profile.Observe(ctx, profile.Signal{
 		Scope: *person, ID: turn.Message.ID, Agent: h.cfg.Agent.Name, Conversation: turn.ContextID,
-		Kind: profile.SignalSaid, Content: asked, At: time.Now().UTC(),
+		Kind: profile.SignalSaid, Content: profile.Clip(asked, profile.MaxSignalBytes), At: time.Now().UTC(),
 	})
 	if err != nil {
 		log.WarnContext(ctx, "cortex: signal not observed", "error", err)

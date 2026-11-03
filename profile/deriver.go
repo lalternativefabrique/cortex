@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"sync"
+
 	"github.com/google/uuid"
 
 	"github.com/lalternativefabrique/cortex/agent"
@@ -18,7 +20,9 @@ const (
 	DefaultMaxSignals  = 40
 	DefaultMaxPerFacet = 6
 	maxFactBytes       = 200
-	maxSignalBytes     = 400
+	// MaxSignalBytes bounds what one signal carries into a derivation, and
+	// what a host should keep of a message when it observes one.
+	MaxSignalBytes = 400
 )
 
 // Deriver reads a person's recent signals against what is already known of
@@ -94,6 +98,8 @@ func (d *Deriver) Learn(ctx context.Context, scope Scope) (int, error) {
 	if maxPerFacet <= 0 {
 		maxPerFacet = DefaultMaxPerFacet
 	}
+	unlock := lockSubject(scope.Subject)
+	defer unlock()
 	signals, err := d.Store.Signals(ctx, scope, now().Add(-window), maxSignals)
 	if err != nil {
 		return 0, fmt.Errorf("profile: read signals: %w", err)
@@ -139,7 +145,7 @@ func derivePrompt(facts []Fact, signals []Signal) string {
 			fmt.Fprintf(&b, " on %s", s.Target)
 		}
 		if c := strings.TrimSpace(s.Content); c != "" {
-			fmt.Fprintf(&b, ": %s", truncate(c, maxSignalBytes))
+			fmt.Fprintf(&b, ": %s", Clip(c, MaxSignalBytes))
 		}
 		b.WriteByte('\n')
 	}
@@ -184,7 +190,7 @@ func (d *Deriver) apply(ctx context.Context, scope Scope, current []Fact, up upd
 		changed++
 	}
 	for _, a := range up.Assert {
-		text := strings.TrimSpace(a.Text)
+		text := oneLine(a.Text)
 		if text == "" || !knownFacet(a.Facet) || texts[factKey(a.Facet, text)] {
 			continue
 		}
@@ -196,7 +202,7 @@ func (d *Deriver) apply(ctx context.Context, scope Scope, current []Fact, up upd
 		if source != Said && source != Edited && source != Did {
 			source = Did
 		}
-		f := Fact{ID: uuid.NewString(), Scope: scope, Facet: a.Facet, Text: truncate(text, maxFactBytes), Source: source, Since: at}
+		f := Fact{ID: uuid.NewString(), Scope: scope, Facet: a.Facet, Text: Clip(text, maxFactBytes), Source: source, Since: at}
 		if err := d.Store.Assert(ctx, f); err != nil {
 			return changed, fmt.Errorf("profile: assert: %w", err)
 		}
@@ -220,11 +226,22 @@ func knownFacet(f Facet) bool {
 	return false
 }
 
-func truncate(s string, n int) string {
+// learning serialises the derivations of one person: two at once would each
+// miss what the other asserts and write the same fact twice.
+var learning sync.Map
+
+func lockSubject(subject string) func() {
+	mu, _ := learning.LoadOrStore(subject, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
+}
+
+// Clip cuts s to at most n bytes on a rune boundary, marking the cut.
+func Clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	cut := n
+	cut := max(n-len("…"), 0)
 	for cut > 0 && (s[cut]&0xC0) == 0x80 {
 		cut--
 	}

@@ -78,7 +78,7 @@ func (s *FileStore) Signals(_ context.Context, scope Scope, since time.Time, lim
 	var all []Signal
 	err := readLines(filepath.Join(s.subjectDir(scope), "signals.jsonl"), func(raw []byte) {
 		var sig Signal
-		if json.Unmarshal(raw, &sig) == nil && !sig.At.Before(since) {
+		if json.Unmarshal(raw, &sig) == nil && sig.Scope == scope && !sig.At.Before(since) {
 			all = append(all, sig)
 		}
 	})
@@ -118,7 +118,7 @@ func (s *FileStore) replay(scope Scope) ([]Fact, error) {
 			return
 		}
 		switch {
-		case line.Fact != nil:
+		case line.Fact != nil && line.Fact.Scope == scope:
 			f := *line.Fact
 			if _, seen := byID[f.ID]; !seen {
 				order = append(order, f.ID)
