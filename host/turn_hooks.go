@@ -8,6 +8,7 @@ import (
 	"github.com/a2aproject/a2a-go/a2a"
 
 	"github.com/lalternativefabrique/cortex/agent"
+	"github.com/lalternativefabrique/cortex/skills"
 	"github.com/lalternativefabrique/cortex/tools"
 )
 
@@ -49,6 +50,9 @@ func gateTools(ts []agent.Tool, a tools.Approver, mcpTool bool) []agent.Tool {
 // approver, and describe_image when the message carries an image.
 func (h *Host) turnTools(ctx context.Context, info TurnInfo) ([]agent.Tool, error) {
 	own := append([]agent.Tool(nil), h.cfg.Tools...)
+	if t := skills.NewTool(h.cfg.SkillSet); t != nil {
+		own = append(own, t)
+	}
 	if h.cfg.TurnTools != nil {
 		extra, err := h.cfg.TurnTools(ctx, info)
 		if err != nil {

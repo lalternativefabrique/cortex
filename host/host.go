@@ -20,6 +20,7 @@ import (
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
+	"github.com/lalternativefabrique/cortex/skills"
 	"github.com/lalternativefabrique/cortex/tools"
 )
 
@@ -79,6 +80,10 @@ type Config struct {
 	// Skills are the actions the app declared for this agent (skills.json):
 	// listed on the Agent Card and at /skills, run by name.
 	Skills []Skill
+	// SkillSet holds the Markdown skills the model may open by name through
+	// use_skill: their names and descriptions are offered on every step,
+	// their instructions read on demand.
+	SkillSet skills.Set
 	// AppInstructions are the app's own instructions (skills.json
 	// "instructions"), applied to every run after Agent.Instructions.
 	AppInstructions string

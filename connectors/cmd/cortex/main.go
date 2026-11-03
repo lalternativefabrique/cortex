@@ -26,6 +26,7 @@ import (
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
+	"github.com/lalternativefabrique/cortex/skills"
 )
 
 var version = "dev"
@@ -157,6 +158,13 @@ func configFromEnv() (host.Config, string, error) {
 		return cfg, "", err
 	}
 	cfg.MCP.Servers = append(cfg.MCP.Servers, servers...)
+	if dir := os.Getenv("CORTEX_SKILLS_DIR"); dir != "off" {
+		set, err := skills.Load(dir)
+		if err != nil {
+			slog.Warn("skills unavailable", "error", err)
+		}
+		cfg.SkillSet = set
+	}
 	cfg.Fallbacks, err = fallbacksFromEnv()
 	if err != nil {
 		return cfg, "", err
