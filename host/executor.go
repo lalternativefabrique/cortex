@@ -138,6 +138,9 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	provider.ReasoningEffort = effort
 	log = log.With("model", provider.Model)
 	client, err := agent.NewClient(provider)
+	if err == nil {
+		client, err = agent.WithFallbacks(client, h.cfg.Fallbacks...)
+	}
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
 	}

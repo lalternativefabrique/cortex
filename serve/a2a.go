@@ -106,7 +106,7 @@ func messageText(msg *a2a.Message) string {
 // makes an A2A context a session: a second task under the same ContextID
 // continues the history the first one built.
 func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Result, error) {
-	client, err := agent.NewClient(e.cfg.Provider)
+	client, err := e.client()
 	if err != nil {
 		return agent.Result{}, err
 	}

@@ -69,7 +69,10 @@ type Agent struct {
 type Config struct {
 	Agent    Agent
 	Provider agent.Provider
-	MCP      mcp.Config
+	// Fallbacks are asked in turn when Provider fails, each with its own
+	// model and key (agent.WithFallbacks).
+	Fallbacks []agent.Provider
+	MCP       mcp.Config
 	// Tools are offered on every turn beside the MCP servers' tools: what
 	// the host itself can do, such as reading the web.
 	Tools []agent.Tool
