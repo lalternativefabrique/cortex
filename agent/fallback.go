@@ -71,9 +71,12 @@ func (f *fallbackClient) each(ctx context.Context, call func(Client) (Completion
 		if err == nil {
 			return resp, nil
 		}
+		if ctx.Err() != nil {
+			return resp, err
+		}
 		var final errFinal
-		if ctx.Err() != nil || errors.As(err, &final) {
-			return resp, errors.Unwrap(err)
+		if errors.As(err, &final) {
+			return resp, final.err
 		}
 		failures = append(failures, f.labels[i]+": "+err.Error())
 		if i+1 < len(f.clients) {
