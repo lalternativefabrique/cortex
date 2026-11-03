@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lalternative/packages/go/svcauth"
 	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/connectors/cluster"
 	lalterrecall "github.com/lalternativefabrique/cortex/connectors/recall/lalter"
@@ -23,7 +24,6 @@ import (
 	"github.com/lalternativefabrique/cortex/host"
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/recall"
-	"github.com/lalternative/packages/go/svcauth"
 )
 
 var version = "dev"
