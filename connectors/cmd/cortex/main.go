@@ -26,6 +26,7 @@ import (
 	"github.com/lalternativefabrique/cortex/mcp"
 	"github.com/lalternativefabrique/cortex/profile"
 	"github.com/lalternativefabrique/cortex/recall"
+	"github.com/lalternativefabrique/cortex/schedule"
 	"github.com/lalternativefabrique/cortex/skills"
 )
 
@@ -46,6 +47,16 @@ func run() error {
 	}
 	if c, ok := cfg.Recall.(io.Closer); ok {
 		defer c.Close()
+	}
+	var h *host.Host
+	tasks, err := scheduleFromEnv(func(ctx context.Context, t schedule.Task) (string, error) {
+		return h.Ask(ctx, envOr("CORTEX_OWNER", "owner"), t.Conversation(), t.Prompt)
+	})
+	if err != nil {
+		return err
+	}
+	if tasks != nil {
+		cfg.Tools = append(cfg.Tools, schedule.Tools(tasks.Store, nil, func(ctx context.Context) { _ = tasks.Refresh(ctx) })...)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -72,11 +83,14 @@ func run() error {
 	}
 	defer spread.stop()
 
-	h, err := host.New(ctx, cfg)
+	h, err = host.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer h.Close()
+	if tasks != nil {
+		go func() { _ = tasks.Serve(ctx) }()
+	}
 	if err := spread.start(ctx, h); err != nil {
 		return err
 	}
@@ -182,6 +196,23 @@ func configFromEnv() (host.Config, string, error) {
 		}
 	}
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
+}
+
+// scheduleFromEnv keeps the agent's scheduled tasks in CORTEX_SCHEDULE_PATH,
+// or the config directory's schedule.yaml, and runs them on this instance
+// as CORTEX_OWNER. CORTEX_SCHEDULE=off schedules nothing.
+func scheduleFromEnv(run schedule.Run) (*schedule.Runner, error) {
+	if os.Getenv("CORTEX_SCHEDULE") == "off" {
+		return nil, nil
+	}
+	path := strings.TrimSpace(os.Getenv("CORTEX_SCHEDULE_PATH"))
+	if path == "" {
+		var err error
+		if path, err = schedule.DefaultPath(); err != nil {
+			return nil, err
+		}
+	}
+	return &schedule.Runner{Store: schedule.NewFileStore(path), Run: run, Timeout: 30 * time.Minute}, nil
 }
 
 // fallbacksFromEnv reads CORTEX_FALLBACKS, a JSON list of models asked in

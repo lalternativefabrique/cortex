@@ -102,6 +102,16 @@ func messageText(msg *a2a.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
+// Ask runs one turn from inside the process, as a scheduled task does, in
+// the conversation named, and returns the answer's text.
+func (e *Server) Ask(ctx context.Context, conversation, text string) (string, error) {
+	res, err := e.runTask(ctx, conversation, text)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
+}
+
 // runTask runs one turn on the conversation named by contextID, which is what
 // makes an A2A context a session: a second task under the same ContextID
 // continues the history the first one built.
