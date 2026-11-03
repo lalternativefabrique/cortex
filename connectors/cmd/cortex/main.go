@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -156,6 +157,10 @@ func configFromEnv() (host.Config, string, error) {
 		return cfg, "", err
 	}
 	cfg.MCP.Servers = append(cfg.MCP.Servers, servers...)
+	cfg.Fallbacks, err = fallbacksFromEnv()
+	if err != nil {
+		return cfg, "", err
+	}
 	cfg.Recall, err = recallFromEnv()
 	if err != nil {
 		return cfg, "", err
@@ -169,6 +174,44 @@ func configFromEnv() (host.Config, string, error) {
 		}
 	}
 	return cfg, envOr("CORTEX_ADDR", ":7400"), nil
+}
+
+// fallbacksFromEnv reads CORTEX_FALLBACKS, a JSON list of models asked in
+// turn when the main one fails: [{"base_url":"…","model":"…","api_key":"…"}].
+// A fallback's key defaults to the main key, for a gateway serving several
+// models under one key.
+func fallbacksFromEnv() ([]agent.Provider, error) {
+	raw := strings.TrimSpace(os.Getenv("CORTEX_FALLBACKS"))
+	if raw == "" {
+		return nil, nil
+	}
+	var entries []struct {
+		BaseURL         string `json:"base_url"`
+		Model           string `json:"model"`
+		APIKey          string `json:"api_key"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("CORTEX_FALLBACKS: %w", err)
+	}
+	out := make([]agent.Provider, 0, len(entries))
+	for _, e := range entries {
+		if e.BaseURL == "" || e.Model == "" {
+			return nil, fmt.Errorf("CORTEX_FALLBACKS: each entry needs base_url and model")
+		}
+		key := e.APIKey
+		if key == "" {
+			key = os.Getenv("CORTEX_API_KEY")
+		}
+		out = append(out, agent.Provider{
+			BaseURL:         e.BaseURL,
+			Model:           e.Model,
+			APIKey:          key,
+			ReasoningEffort: e.ReasoningEffort,
+			HTTPClient:      &http.Client{Transport: lentToken{}},
+		})
+	}
+	return out, nil
 }
 
 // mcpServersFromEnv reads remote MCP servers written "name=url,name=url",

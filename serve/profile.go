@@ -11,6 +11,15 @@ import (
 	"github.com/lalternativefabrique/cortex/profile"
 )
 
+// client is the model with its fallbacks behind it.
+func (s *Server) client() (agent.Client, error) {
+	c, err := agent.NewClient(s.cfg.Provider)
+	if err != nil {
+		return nil, err
+	}
+	return agent.WithFallbacks(c, s.cfg.Fallbacks...)
+}
+
 // learnTimeout bounds the derivation that follows a turn: one model call,
 // off the turn's path.
 const learnTimeout = 45 * time.Second

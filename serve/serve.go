@@ -69,6 +69,8 @@ type Config struct {
 	// than through the server keeps the repository's contents on this machine:
 	// what leaves is the conversation, not the code.
 	Provider agent.Provider
+	// Fallbacks are asked in turn when Provider fails (agent.WithFallbacks).
+	Fallbacks []agent.Provider
 	// Addr is where to listen. Empty means 127.0.0.1 on a free port, which is
 	// the only address that makes sense — this exposes a shell.
 	Addr string
@@ -572,7 +574,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		_ = conv.store.Append(asking)
 	}
 
-	client, err := agent.NewClient(s.cfg.Provider)
+	client, err := s.client()
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
