@@ -41,6 +41,7 @@ type wireRequest struct {
 	Model     string        `json:"model"`
 	Messages  []wireMessage `json:"messages"`
 	MaxTokens int           `json:"max_tokens,omitempty"`
+	Reasoning string        `json:"reasoning_effort,omitempty"`
 }
 
 type wireMessage struct {
@@ -93,7 +94,7 @@ type wireResponse struct {
 }
 
 func (d *Describer) describeEncoded(ctx context.Context, dataURI, question string) (string, error) {
-	return d.ask(ctx, dataURI, question, systemPrompt, 2000)
+	return d.ask(ctx, dataURI, question, systemPrompt, d.cfg.MaxTokens)
 }
 
 // contentPart chooses how the payload travels: a PDF goes as a file the
@@ -113,6 +114,7 @@ func (d *Describer) ask(ctx context.Context, dataURI, question, system string, m
 	payload := wireRequest{
 		Model:     d.cfg.Model,
 		MaxTokens: maxTokens,
+		Reasoning: d.cfg.ReasoningEffort,
 		Messages: []wireMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: []any{
