@@ -82,6 +82,16 @@ type Step struct {
 	DurationMs        int64    `json:"duration_ms"`
 }
 
+// Tokens is the running total the agent reports on its usage artifact.
+// InputTokens includes the cached ones.
+type Tokens struct {
+	ModelCalls        int `json:"model_calls"`
+	InputTokens       int `json:"input_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+}
+
 // ModelUsage is what one model consumed during a turn, in tokens.
 // InputTokens excludes the cached ones.
 type ModelUsage struct {
@@ -105,6 +115,8 @@ type Usage struct {
 type Turn struct {
 	ToolCalls []ToolCall
 	Steps     []Step
+	// Tokens is the agent's own running total, its last value.
+	Tokens Tokens
 	// Usage is nil when the agent was reached without lalter's door.
 	Usage *Usage
 }
@@ -209,6 +221,8 @@ func (t task) turn() Turn {
 				if json.Unmarshal(p.Data, &call) == nil {
 					turn.ToolCalls = append(turn.ToolCalls, call)
 				}
+			case "usage":
+				_ = json.Unmarshal(p.Data, &turn.Tokens)
 			case "step":
 				var step Step
 				if json.Unmarshal(p.Data, &step) == nil {
