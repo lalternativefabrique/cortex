@@ -155,7 +155,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		tools = append(tools, respond)
 		system = withRespondInstruction(system)
 	}
-	stream := &stream{ctx: ctx, emit: emit, task: turn, memory: memory, answer: a2a.NewArtifactID(), structured: respond != nil}
+	stream := &stream{ctx: ctx, emit: emit, task: turn, memory: memory, answer: a2a.NewArtifactID(), usage: a2a.NewArtifactID(), structured: respond != nil}
 	runnerFor := func(b runBounds) (*agent.Runner, error) {
 		return agent.NewRunner(agent.Config{
 			Client:         client,
@@ -404,6 +404,8 @@ type stream struct {
 	// learn derives the person's profile once the answer is recorded.
 	learn  func()
 	answer a2a.ArtifactID
+	// usage is the one artifact the running total replaces after each call.
+	usage a2a.ArtifactID
 	// structured holds text back: the answer is what respond records.
 	structured bool
 
@@ -413,6 +415,8 @@ type stream struct {
 	// pending is the latest chunk, held back so the last one can be marked
 	// lastChunk without an empty part after it.
 	pending string
+	spent   agent.Usage
+	calls   int
 }
 
 func (s *stream) OnStepStart(int) {
@@ -446,6 +450,20 @@ func (s *stream) OnModelEnd(step int, _ string, reasoning string, toolCalls []ag
 	ev.Artifact.Name = "step"
 	if err := s.emit(s.ctx, ev); err != nil {
 		slog.Warn("host: step not reported", "step", step, "error", err)
+	}
+	s.spent.Add(usage)
+	s.calls++
+	total := a2a.NewArtifactUpdateEvent(s.task, s.usage, a2a.DataPart{Data: map[string]any{
+		"model_calls":         s.calls,
+		"input_tokens":        s.spent.Input,
+		"cached_input_tokens": s.spent.CachedInput,
+		"output_tokens":       s.spent.Output,
+		"total_tokens":        s.spent.Input + s.spent.Output,
+	}})
+	total.Artifact.Name = "usage"
+	total.Append = false
+	if err := s.emit(s.ctx, total); err != nil {
+		slog.Warn("host: running usage not reported", "step", step, "error", err)
 	}
 }
 

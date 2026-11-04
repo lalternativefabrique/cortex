@@ -141,6 +141,7 @@ type event struct {
 	Last     bool   `json:"lastChunk"`
 	Final    bool   `json:"final"`
 	Artifact struct {
+		ID    string           `json:"artifactId"`
 		Name  string           `json:"name"`
 		Parts []map[string]any `json:"parts"`
 	} `json:"artifact"`
@@ -509,5 +510,49 @@ func TestTheCardAndTheContextReportTheSameVersion(t *testing.T) {
 	}
 	if card.Version != "dev" || context.Version != "dev" {
 		t.Errorf("card %q, context %q", card.Version, context.Version)
+	}
+}
+
+func TestAStreamedTurnReportsItsRunningTokenTotalUnderOneArtifact(t *testing.T) {
+	provider, _ := fakeModel(t, "corpus__search")
+	mcpURL, _ := fakeMCP(t)
+	srv := start(t, Config{
+		Agent:    Agent{Name: "cerveau"},
+		Provider: provider,
+		MCP:      mcp.Config{Servers: []mcp.ServerConfig{{Name: "corpus", URL: mcpURL}}},
+		Token:    "t",
+	})
+	events := readStream(t, rpc(t, srv.URL, "t", "message/stream", message("quel budget ?", "ctx-u", nil)))
+
+	var steps int
+	var ids []string
+	var last map[string]any
+	for _, ev := range events {
+		if ev.Kind != "artifact-update" {
+			continue
+		}
+		switch ev.Artifact.Name {
+		case "step":
+			steps++
+		case "usage":
+			ids = append(ids, ev.Artifact.ID)
+			last = ev.Artifact.Parts[0]["data"].(map[string]any)
+		}
+	}
+	if steps == 0 || len(ids) != steps {
+		t.Fatalf("%d steps, %d usage updates", steps, len(ids))
+	}
+	for _, id := range ids {
+		if id == "" || id != ids[0] {
+			t.Fatalf("usage artifact ids %v, want one id", ids)
+		}
+	}
+	if int(last["model_calls"].(float64)) != steps {
+		t.Fatalf("last usage %v after %d steps", last, steps)
+	}
+	for _, k := range []string{"input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"} {
+		if _, ok := last[k]; !ok {
+			t.Fatalf("usage lacks %s: %v", k, last)
+		}
 	}
 }

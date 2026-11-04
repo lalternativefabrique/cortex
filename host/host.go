@@ -317,6 +317,7 @@ func cortexExtension() a2a.AgentExtension {
 				"answer":     "the answer: text chunks, or one data part under an output schema",
 				"tool-call":  "one per tool call: the tool, its arguments, its result or error",
 				"step":       "one per model call: its reasoning, the tools it asked for, its tokens and duration",
+				"usage":      "the turn's running token total, sent again under the same artifact id after every model call: model_calls, input_tokens (cached included), cached_input_tokens, output_tokens, total_tokens",
 				"attachment": "one per file a tool attached to the reply (a drawing, a picture): one file part; the answer shows it as attachment://<artifact id>",
 			},
 			"context": "/context serves the agent's own instructions, default model, tools and MCP servers",
