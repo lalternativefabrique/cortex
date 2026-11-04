@@ -207,6 +207,7 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("GET /context", h.serveContext)
 	mux.Handle("POST /skills/refresh", h.authorized(http.HandlerFunc(h.refreshSkills)))
 	mux.Handle("POST /a2a", h.authorized(watchCaller(jsonRPC(h.handler))))
+	h.profileRoutes(mux)
 	return mux
 }
 
