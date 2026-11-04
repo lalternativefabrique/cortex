@@ -356,3 +356,34 @@ func TestASmallImageIsSentUntouched(t *testing.T) {
 		t.Fatalf("uri starts %.30q, want the png kept", uri)
 	}
 }
+
+func TestDescribeSendsTheConfiguredBudgetAndReasoning(t *testing.T) {
+	srv, captured := captureServer(t, "ok", http.StatusOK)
+	d, err := New(Config{BaseURL: srv.URL + "/v1", Model: "vision-test", MaxTokens: 4000, ReasoningEffort: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.DescribeBytes(context.Background(), onePixelPNG, "image/png", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*captured)["max_tokens"]; got != float64(4000) {
+		t.Fatalf("max_tokens = %v, want 4000", got)
+	}
+	if got := (*captured)["reasoning_effort"]; got != "none" {
+		t.Fatalf("reasoning_effort = %v, want none", got)
+	}
+}
+
+func TestDescribeLeavesReasoningToTheModelByDefault(t *testing.T) {
+	srv, captured := captureServer(t, "ok", http.StatusOK)
+	d := newTestDescriber(t, srv.URL)
+	if _, err := d.DescribeBytes(context.Background(), onePixelPNG, "image/png", "q"); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := (*captured)["reasoning_effort"]; sent {
+		t.Fatal("reasoning_effort was sent although none was configured")
+	}
+	if got := (*captured)["max_tokens"]; got != float64(DefaultMaxTokens) {
+		t.Fatalf("max_tokens = %v, want %d", got, DefaultMaxTokens)
+	}
+}

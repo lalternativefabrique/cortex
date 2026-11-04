@@ -43,8 +43,15 @@ type Config struct {
 	Model   string
 	Timeout time.Duration
 	// MaxBytes caps the encoded image. Zero means DefaultMaxBytes.
-	MaxBytes   int
-	HTTPClient *http.Client
+	MaxBytes int
+	// MaxTokens bounds a description. Zero means DefaultMaxTokens. A model
+	// that reasons spends these tokens thinking before it writes, and runs
+	// out with nothing written when they are too few.
+	MaxTokens int
+	// ReasoningEffort is sent as reasoning_effort when set, such as "none"
+	// for a reasoning model that should describe rather than think.
+	ReasoningEffort string
+	HTTPClient      *http.Client
 }
 
 const (
@@ -52,7 +59,8 @@ const (
 	// DefaultMaxBytes caps the encoded payload. base64 inflates by a third,
 	// so a 4 MiB ceiling on the wire is a 3 MiB file — comfortably above any
 	// screenshot and well under what a provider will refuse.
-	DefaultMaxBytes = 4 << 20
+	DefaultMaxBytes  = 4 << 20
+	DefaultMaxTokens = 2000
 )
 
 // Describer produces a textual description of an image.
@@ -74,6 +82,9 @@ func New(cfg Config) (*Describer, error) {
 	}
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = DefaultMaxBytes
+	}
+	if cfg.MaxTokens == 0 {
+		cfg.MaxTokens = DefaultMaxTokens
 	}
 	client := cfg.HTTPClient
 	if client == nil {
@@ -115,7 +126,7 @@ func (d *Describer) ReadDocument(ctx context.Context, data []byte, mime, questio
 		mime = "application/pdf"
 	}
 	if maxTokens <= 0 {
-		maxTokens = 2000
+		maxTokens = d.cfg.MaxTokens
 	}
 	dataURI := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 	return d.ask(ctx, dataURI, question, question, maxTokens)
