@@ -69,8 +69,27 @@ func (h *Host) turnTools(ctx context.Context, info TurnInfo) ([]agent.Tool, erro
 		approver = a
 	}
 	out := append(gateTools(own, approver, false), gateTools(h.servers.forTurn(), approver, true)...)
-	if t := newDescribeAttachedImage(h.cfg.Vision, info.Files); t != nil {
+	vision, err := h.visionFor(ctx, info)
+	if err != nil {
+		return nil, fmt.Errorf("vision: %w", err)
+	}
+	if t := newDescribeAttachedImage(vision, info.Files); t != nil {
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// visionFor picks the run's describer: the model the run asks for, else its
+// skill's, else the agent's Vision.
+func (h *Host) visionFor(ctx context.Context, info TurnInfo) (tools.BytesDescriber, error) {
+	model, _ := info.Metadata[VisionModelKey].(string)
+	model = strings.TrimSpace(model)
+	if model == "" && info.Skill != "" {
+		_, skills := h.declaredSkills()
+		model = strings.TrimSpace(skills[info.Skill].VisionModel)
+	}
+	if model == "" || h.cfg.VisionFor == nil || len(info.Files) == 0 {
+		return h.cfg.Vision, nil
+	}
+	return h.cfg.VisionFor(ctx, model)
 }

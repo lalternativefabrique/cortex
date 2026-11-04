@@ -153,3 +153,43 @@ func TestTurnToolsAreOfferedForTheTurn(t *testing.T) {
 		t.Errorf("the turn's tool ran %d times", tool.calls.Load())
 	}
 }
+
+type namedDescriber struct {
+	describer
+	model string
+}
+
+func (d *namedDescriber) Model() string { return d.model }
+
+func TestARunOrItsSkillPicksTheVisionModel(t *testing.T) {
+	agentVision := &namedDescriber{model: "agent-vision"}
+	skills, err := compileSkills([]Skill{{ID: "read_receipt", Name: "r", Description: "d", Instructions: "i", VisionModel: "ocr-model"}, {ID: "plain", Name: "p", Description: "d", Instructions: "i"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Host{skills: skills, cfg: Config{
+		Vision: agentVision,
+		VisionFor: func(_ context.Context, model string) (tools.BytesDescriber, error) {
+			return &namedDescriber{model: model}, nil
+		},
+	}}
+	image := []File{{Name: "a.png", MimeType: "image/png"}}
+	for _, c := range []struct {
+		name  string
+		info  TurnInfo
+		model string
+	}{
+		{"the agent's by default", TurnInfo{Files: image}, "agent-vision"},
+		{"the skill's", TurnInfo{Skill: "read_receipt", Files: image}, "ocr-model"},
+		{"the run's over the skill's", TurnInfo{Skill: "read_receipt", Files: image, Metadata: map[string]any{VisionModelKey: "pixtral"}}, "pixtral"},
+		{"the agent's for a skill naming none", TurnInfo{Skill: "plain", Files: image}, "agent-vision"},
+	} {
+		d, err := h.visionFor(context.Background(), c.info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.(*namedDescriber).model != c.model {
+			t.Errorf("%s: got %s, want %s", c.name, d.(*namedDescriber).model, c.model)
+		}
+	}
+}

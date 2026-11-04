@@ -50,6 +50,8 @@ type Request struct {
 	// ReasoningEffort asks how much the model thinks on this run: high,
 	// medium, low or none.
 	ReasoningEffort string
+	// VisionModel asks for the model that reads the run's images.
+	VisionModel string
 	// NoMemory runs the turn without the agent's memory.
 	NoMemory bool
 	Images   []Image
@@ -260,6 +262,9 @@ func send(ctx context.Context, a Agent, r Request, schema map[string]any) (task,
 	}
 	if r.Skill != "" {
 		meta[host.SkillKey] = r.Skill
+	}
+	if r.VisionModel != "" {
+		meta[host.VisionModelKey] = r.VisionModel
 	}
 	if r.Model != "" {
 		meta[host.ModelKey] = r.Model
