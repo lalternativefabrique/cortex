@@ -55,6 +55,9 @@ const (
 	// ReasoningEffortKey asks how much the model thinks before answering on
 	// this run: high, medium, low or none.
 	ReasoningEffortKey = "reasoningEffort"
+	// VisionModelKey asks for the model that reads this run's images, in
+	// place of the skill's or the agent's (Config.VisionFor).
+	VisionModelKey = "visionModel"
 	// RecallKey false runs the turn without memory: nothing recalled, nothing
 	// written.
 	RecallKey = "recall"
@@ -128,6 +131,9 @@ type Config struct {
 	// Vision reads the images a caller attaches to its message: with it,
 	// describe_image is offered on a turn that carries one.
 	Vision tools.BytesDescriber
+	// VisionFor, when set, builds the describer for a vision model a run
+	// (VisionModelKey) or its skill names; a run naming none uses Vision.
+	VisionFor func(ctx context.Context, model string) (tools.BytesDescriber, error)
 	// SourceTools names the tools whose results the answer's figures are
 	// checked against (agent.Config.SourceTools).
 	SourceTools []string
@@ -310,6 +316,7 @@ func cortexExtension() a2a.AgentExtension {
 				MCPHeadersKey:      "headers the run's MCP calls send, by server name or for every server, never shown to the model",
 				TurnTokenKey:       "the Bearer the run's model and memory calls present",
 				ReasoningEffortKey: "how much the model thinks on this run: high, medium, low or none",
+				VisionModelKey:     "the model that reads this run's attached images, in place of the skill's or the agent's",
 				RecallKey:          "false runs without memory: nothing recalled, nothing written",
 			},
 			"files": "file parts of the message are the run's attached files; images are read with describe_image when the agent has vision",

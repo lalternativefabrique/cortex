@@ -28,6 +28,8 @@ type Spec[In any] struct {
 	Examples     []In
 	// Model is the model this skill runs on; empty uses the agent's.
 	Model string
+	// VisionModel reads the skill's images; empty uses the agent's.
+	VisionModel string
 }
 
 // Skill is a declared action: its declaration, and the call that runs it.
@@ -41,7 +43,7 @@ func Declare[In, Out any](s Spec[In]) Skill[In, Out] {
 	if s.ID == "" {
 		panic("skill: an id is required")
 	}
-	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions, Model: s.Model}
+	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions, Model: s.Model, VisionModel: s.VisionModel}
 	var in In
 	d.Input = mustSchema(s.ID, "input", &in)
 	if !isText[Out]() {
@@ -84,6 +86,8 @@ type Call struct {
 	Model string
 	// ReasoningEffort asks how much the model thinks on this run.
 	ReasoningEffort string
+	// VisionModel asks for the model that reads this run's images.
+	VisionModel string
 	// NoMemory runs the skill without the agent's memory.
 	NoMemory bool
 	Images   []client.Image
@@ -107,6 +111,7 @@ func (t Skill[In, Out]) Run(ctx context.Context, a client.Agent, in In, c Call) 
 		Skill:           t.declaration.ID,
 		Model:           c.Model,
 		ReasoningEffort: c.ReasoningEffort,
+		VisionModel:     c.VisionModel,
 		NoMemory:        c.NoMemory,
 		Images:          c.Images,
 	}

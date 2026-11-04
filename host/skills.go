@@ -27,6 +27,9 @@ type Skill struct {
 	// Model is the model this skill runs on, chosen by the app for the
 	// task; empty uses the agent's. A run may still ask for another.
 	Model string `json:"model,omitempty"`
+	// VisionModel reads this skill's attached images; empty uses the
+	// agent's. A run may still ask for another.
+	VisionModel string `json:"vision_model,omitempty"`
 	// MaxSteps and MaxInputTokens bound one run of this skill, when the
 	// app knows its task better than the agent's defaults: a synthesis has
 	// no business spending what a coding task does. Zero uses the agent's.
