@@ -12,8 +12,12 @@ import (
 )
 
 // client is the model with its fallbacks behind it.
-func (s *Server) client() (agent.Client, error) {
-	c, err := agent.NewClient(s.cfg.Provider)
+func (s *Server) client(effort string) (agent.Client, error) {
+	provider := s.cfg.Provider
+	if effort != "" {
+		provider.ReasoningEffort = effort
+	}
+	c, err := agent.NewClient(provider)
 	if err != nil {
 		return nil, err
 	}

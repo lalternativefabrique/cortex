@@ -446,6 +446,9 @@ type TurnRequest struct {
 	// Recall false opens an incognito conversation: nothing remembered from
 	// before, nothing written for later. Read on the first turn only.
 	Recall *bool `json:"recall,omitempty"`
+	// ReasoningEffort is the person's choice for this turn alone: high,
+	// medium, low or none. Empty keeps the server's own.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -504,6 +507,11 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	var req TurnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	effort := strings.TrimSpace(req.ReasoningEffort)
+	if effort != "" && !agent.ValidReasoningEffort(effort) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("reasoning_effort %q is not one of %s", effort, strings.Join(agent.ReasoningEfforts, ", "))})
 		return
 	}
 	asked := strings.TrimSpace(req.Message)
@@ -577,7 +585,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		_ = conv.store.Append(asking)
 	}
 
-	client, err := s.client()
+	client, err := s.client(effort)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
