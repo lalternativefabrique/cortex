@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"github.com/google/uuid"
 	"io"
 	"net"
 	"net/http"
@@ -435,3 +436,33 @@ func (stubDescriber) Describe(context.Context, string, string) (string, error) {
 }
 
 func (stubDescriber) Model() string { return "stub" }
+
+func TestAResumedThreadKeepsItsID(t *testing.T) {
+	s, _ := serverWithSkill(t, "unused")
+	given := uuid.NewString()
+	id, opened := s.conversation(TurnRequest{
+		Conversation: given,
+		Messages: []Message{
+			{Role: "user", Content: "earlier"},
+			{Role: "assistant", Content: "sure"},
+			{Role: "user", Content: "now"},
+		},
+	})
+	if id != given {
+		t.Fatalf("id = %q, want %q", id, given)
+	}
+	if len(opened.history) != 2 {
+		t.Fatalf("history = %d messages, want 2", len(opened.history))
+	}
+	if again, _ := s.conversation(TurnRequest{Conversation: given, Message: "next"}); again != given {
+		t.Fatalf("next turn landed in %q", again)
+	}
+}
+
+func TestAnUnknownIDWithoutHistoryOpensANewThread(t *testing.T) {
+	s, _ := serverWithSkill(t, "unused")
+	given := uuid.NewString()
+	if id, _ := s.conversation(TurnRequest{Conversation: given, Message: "hi"}); id == given {
+		t.Fatal("a thread with no history took a caller's id")
+	}
+}
