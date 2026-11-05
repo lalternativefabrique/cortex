@@ -840,6 +840,11 @@ func (s *Server) conversation(req TurnRequest) (string, *talk) {
 	opened := &talk{incognito: req.Recall != nil && !*req.Recall}
 	if req.Message == "" && len(req.Messages) > 1 {
 		opened.history = toAgentMessages(req.Messages[:len(req.Messages)-1])
+		// A thread the holder of its history resumes here keeps its id, so
+		// the journal goes on writing into the same conversation.
+		if given, err := uuid.Parse(strings.TrimSpace(req.Conversation)); err == nil {
+			id = given.String()
+		}
 	}
 	// Written as it goes, so a conversation outlives the window having it.
 	// A store that cannot be opened costs the transcript and nothing else.
