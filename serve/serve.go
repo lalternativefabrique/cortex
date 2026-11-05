@@ -355,6 +355,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /turn/steer", s.handleSteer)
 	mux.HandleFunc("GET /workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /skills", s.handleSkills)
+	mux.HandleFunc("GET /reasoning", s.handleReasoning)
 	mux.HandleFunc("GET /context", s.handleContext)
 	mux.HandleFunc("GET /diff", s.handleDiff)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
