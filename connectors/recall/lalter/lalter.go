@@ -22,7 +22,7 @@ import (
 const endUserHeader = "X-End-User-Id"
 
 type Config struct {
-	// BaseURL is lalter's API root, e.g. https://api.lalter.fr/api/v1.
+	// BaseURL is lalter's API root, e.g. https://api.orbitos.fr/api/v1.
 	BaseURL string
 	// AppKey holds the recall scope.
 	AppKey string
