@@ -15,6 +15,8 @@ import (
 // ReadConfig configures the read tool.
 type ReadConfig struct {
 	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots []string
 	// MaxLines caps a single read. Zero means DefaultReadMaxLines.
 	MaxLines int
 	// MaxLineBytes truncates individual long lines, so a minified bundle
@@ -83,7 +85,7 @@ func (t *readTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 		return failure("path is required")
 	}
 
-	abs, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	abs, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

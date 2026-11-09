@@ -15,6 +15,8 @@ import (
 // GlobConfig configures the glob tool.
 type GlobConfig struct {
 	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots []string
 	// MaxResults caps how many paths are returned. Zero means
 	// DefaultGlobMaxResults.
 	MaxResults int
@@ -82,7 +84,7 @@ func (t *globTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 		return failure("pattern is required")
 	}
 
-	base, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	base, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

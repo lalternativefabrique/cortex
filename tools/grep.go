@@ -14,6 +14,8 @@ import (
 // GrepConfig configures the grep tool.
 type GrepConfig struct {
 	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots []string
 	// MaxMatches caps how many matching lines are reported. Zero means
 	// DefaultGrepMaxMatches.
 	MaxMatches int
@@ -77,7 +79,7 @@ func (t *grepTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 		return failure("pattern is required")
 	}
 
-	searchPath, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	searchPath, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

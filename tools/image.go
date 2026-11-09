@@ -25,7 +25,9 @@ type BytesDescriber interface {
 
 // ImageConfig configures the describe_image tool.
 type ImageConfig struct {
-	Root      string
+	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots     []string
 	Describer Describer
 }
 
@@ -73,7 +75,7 @@ func (t *imageTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Too
 		return failure("no vision model is configured; start the agent with -vision-model to describe images")
 	}
 
-	abs, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	abs, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

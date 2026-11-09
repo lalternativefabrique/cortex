@@ -12,7 +12,9 @@ import (
 
 // EditConfig configures the edit tool.
 type EditConfig struct {
-	Root     string
+	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots    []string
 	Tracker  *ReadTracker
 	Approver Approver
 }
@@ -71,7 +73,7 @@ func (t *editTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 		return failure("old_string and new_string are identical, so this edit would change nothing")
 	}
 
-	abs, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	abs, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}
