@@ -104,3 +104,31 @@ func TestNoEffortSendsNothing(t *testing.T) {
 		}
 	}
 }
+
+func TestTheAssistantsThinkingGoesBackWithItsToolCalls(t *testing.T) {
+	c := &httpClient{provider: Provider{Model: "lalter"}}
+	req, err := c.buildPayload(CompletionRequest{Messages: []Message{
+		{Role: RoleUser, Content: "fix it"},
+		{Role: RoleAssistant, Reasoning: "read main.go first", ToolCalls: []ToolCall{{ID: "1", Name: "read", Arguments: json.RawMessage(`{}`)}}},
+		{Role: RoleTool, ToolCallID: "1", Content: "package main", Reasoning: "never sent"},
+		{Role: RoleAssistant, Content: "done"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(req)
+	var out struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Messages[1]["reasoning_content"]; got != "read main.go first" {
+		t.Errorf("assistant reasoning = %v", got)
+	}
+	for _, i := range []int{0, 2, 3} {
+		if _, ok := out.Messages[i]["reasoning_content"]; ok {
+			t.Errorf("message %d carries reasoning_content: %v", i, out.Messages[i])
+		}
+	}
+}

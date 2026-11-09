@@ -68,6 +68,10 @@ type Message struct {
 	Content    string
 	ToolCallID string
 	ToolCalls  []ToolCall
+	// Reasoning is the assistant's own thinking on that step. Thinking models
+	// that call tools (DeepSeek) expect it back on every later request of the
+	// run; without it each step rebuilds its plan from scratch.
+	Reasoning string
 }
 
 // ToolCall is a tool invocation requested by the model.

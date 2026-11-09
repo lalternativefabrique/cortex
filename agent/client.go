@@ -36,9 +36,6 @@ type CompletionResponse struct {
 	ToolCalls []ToolCall
 	Usage     Usage
 	// Reasoning is what a thinking model worked through before answering.
-	// It is not part of the answer and never goes back into the history —
-	// it is there to be shown, and to explain a turn that ended with nothing
-	// else to say.
 	Reasoning string
 	// StopReason is the provider's raw finish_reason, kept for diagnostics.
 	StopReason string
@@ -130,6 +127,9 @@ type wireMessage struct {
 	Content    string         `json:"content"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	// Sent back only when the model produced some, so a provider that never
+	// reasons never sees the field.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type wireToolCall struct {
@@ -243,6 +243,9 @@ func (c *httpClient) buildPayload(req CompletionRequest) (wireRequest, error) {
 			Role:       string(wireRole(m.Role)),
 			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
+		}
+		if m.Role == RoleAssistant {
+			wm.ReasoningContent = m.Reasoning
 		}
 		for _, tc := range m.ToolCalls {
 			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{

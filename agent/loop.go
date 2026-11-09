@@ -335,6 +335,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 			Role:      RoleAssistant,
 			Content:   resp.Text,
 			ToolCalls: resp.ToolCalls,
+			Reasoning: resp.Reasoning,
 		}
 		history = append(history, assistant)
 		r.record(assistant)
