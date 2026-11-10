@@ -74,7 +74,8 @@ func secretExposure(req Request, root string) string {
 	}
 	stages, err := parseShell(req.Action)
 	if err != nil {
-		stages = []stage{{Words: strings.Fields(req.Action)}}
+		words := strings.Fields(req.Action)
+		stages = []stage{{Words: words, Quoted: make([]bool, len(words)), Globs: make([]bool, len(words))}}
 	}
 	for _, st := range stages {
 		st = st.Command()

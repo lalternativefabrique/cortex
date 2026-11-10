@@ -412,7 +412,7 @@ func isDigits(s string) bool {
 
 // checkStage refuses a stage whose command the words do not name plainly.
 func checkStage(s Stage) error {
-	for len(s.Words) > 0 && isAssignment(s.Words[0], s.Quoted[0]) {
+	for len(s.Words) > 0 && len(s.Quoted) > 0 && len(s.Globs) > 0 && isAssignment(s.Words[0], s.Quoted[0]) {
 		name, _, _ := strings.Cut(s.Words[0], "=")
 		for _, prefix := range assignmentsThatRedirect {
 			if strings.HasPrefix(name, prefix) {
@@ -449,7 +449,7 @@ func isAssignment(word string, quoted bool) bool {
 // command is the stage with its leading assignments dropped, which is what
 // the rules match.
 func (s Stage) Command() Stage {
-	for len(s.Words) > 0 && isAssignment(s.Words[0], s.Quoted[0]) {
+	for len(s.Words) > 0 && len(s.Quoted) > 0 && len(s.Globs) > 0 && isAssignment(s.Words[0], s.Quoted[0]) {
 		s.Words, s.Quoted, s.Globs = s.Words[1:], s.Quoted[1:], s.Globs[1:]
 	}
 	return s

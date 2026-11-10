@@ -45,3 +45,9 @@ func TestSecretGuardLetsOrdinaryWorkThrough(t *testing.T) {
 		}
 	}
 }
+
+func TestAnUnparsableCommandIsCheckedWithoutPanicking(t *testing.T) {
+	for _, cmd := range []string{`FOO=1 echo 'unterminated`, `A=1 B=2 "half`, `env 'x`} {
+		_ = secretExposure(Request{Tool: "bash", Action: cmd}, t.TempDir())
+	}
+}
