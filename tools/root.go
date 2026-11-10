@@ -15,13 +15,26 @@ import (
 	"github.com/lalternativefabrique/cortex/agent"
 )
 
-// resolveWithinRoot resolves rel under root and returns an absolute path,
-// refusing anything that escapes root.
+// resolveWithinRoot resolves rel under root, or an absolute rel under one of
+// extra, and returns an absolute path, refusing anything that escapes them.
 //
 // rel may be relative or absolute: models routinely echo back an absolute
 // path they read from an earlier tool result, and rejecting that shape
 // produces failures that teach the model nothing.
-func resolveWithinRoot(root, rel string) (string, error) {
+func resolveWithinRoot(root, rel string, extra ...string) (string, error) {
+	abs, err := resolveUnder(root, rel)
+	if err == nil || !filepath.IsAbs(rel) {
+		return abs, err
+	}
+	for _, other := range extra {
+		if found, otherErr := resolveUnder(other, rel); otherErr == nil {
+			return found, nil
+		}
+	}
+	return "", err
+}
+
+func resolveUnder(root, rel string) (string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve root: %w", err)

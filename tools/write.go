@@ -13,7 +13,9 @@ import (
 
 // WriteConfig configures the write tool.
 type WriteConfig struct {
-	Root     string
+	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots    []string
 	Tracker  *ReadTracker
 	Approver Approver
 }
@@ -61,7 +63,7 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Too
 		return failure("path is required")
 	}
 
-	abs, err := resolveWithinRoot(t.cfg.Root, args.Path)
+	abs, err := resolveWithinRoot(t.cfg.Root, args.Path, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

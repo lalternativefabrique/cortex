@@ -46,6 +46,10 @@ type Config struct {
 	// Root is the workspace every tool is confined to. Every path read or
 	// written resolves under it, and nothing outside it exists for the agent.
 	Root string
+	// Roots are further directories the coding tools may reach by absolute
+	// path, such as the workspace's own git worktrees. The sandbox has to
+	// see them too.
+	Roots []string
 	// Instructions, when set, makes this an assistant rather than a coding
 	// agent. They replace the coding agent's prompt and each MCP server's own
 	// instructions follow them; the conversation does not open on the
@@ -283,13 +287,14 @@ func (s *Server) deferredTools() []agent.Toolset {
 func codingTools(cfg Config) []agent.Tool {
 	tracker := tools.NewReadTracker()
 	return []agent.Tool{
-		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
-		tools.NewGrep(tools.GrepConfig{Root: cfg.Root, Approver: cfg.Approver}),
-		tools.NewGlob(tools.GlobConfig{Root: cfg.Root}),
-		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
-		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewGrep(tools.GrepConfig{Root: cfg.Root, Roots: cfg.Roots, Approver: cfg.Approver}),
+		tools.NewGlob(tools.GlobConfig{Root: cfg.Root, Roots: cfg.Roots}),
+		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewBash(tools.BashConfig{
 			Root:        cfg.Root,
+			Roots:       cfg.Roots,
 			Sandbox:     cfg.Sandbox,
 			Approver:    cfg.Approver,
 			Workstation: true,

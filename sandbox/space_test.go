@@ -28,6 +28,16 @@ func TestSpaceMapsWorkspaceDirectoriesAndRefusesOthers(t *testing.T) {
 	}
 }
 
+func TestSpaceMapsMountedDirectoriesToWhereTheSpaceSeesThem(t *testing.T) {
+	s := &Space{Root: "/home/me/project", Mounts: []string{"/home/me/project-worktrees:/workspace-worktrees"}}
+	if got, err := s.inside("/home/me/project-worktrees/feat-x/apps"); err != nil || got != "/workspace-worktrees/feat-x/apps" {
+		t.Errorf("inside = %q, %v", got, err)
+	}
+	if _, err := s.inside("/home/me/project-other"); err == nil {
+		t.Error("a directory outside every mount was accepted")
+	}
+}
+
 // TestSpaceRunsCommandsWhereTheMachineIsOutOfReach opens a real agent space,
 // so it runs only with SKLP_SPACE_TEST=1 and a sklp that knows "agent up".
 func TestSpaceRunsCommandsWhereTheMachineIsOutOfReach(t *testing.T) {

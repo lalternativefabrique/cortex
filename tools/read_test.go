@@ -66,6 +66,19 @@ func TestReadRefusesPathOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestReadReachesAnExtraRootByAbsolutePathOnly(t *testing.T) {
+	root, extra, other := t.TempDir(), t.TempDir(), t.TempDir()
+	writeTemp(t, extra, "a.txt", "worktree\n")
+	writeTemp(t, other, "b.txt", "secret\n")
+	read := NewRead(ReadConfig{Root: root, Roots: []string{extra}})
+	if out := run(t, read, map[string]any{"path": extra + "/a.txt"}); !strings.Contains(out, "worktree") {
+		t.Fatalf("a file under an extra root was not read: %q", out)
+	}
+	if out := run(t, read, map[string]any{"path": other + "/b.txt"}); !strings.Contains(out, "outside the workspace") {
+		t.Fatalf("a file outside every root was read: %q", out)
+	}
+}
+
 func TestReadReportsMissingFile(t *testing.T) {
 	root := t.TempDir()
 	out := run(t, NewRead(ReadConfig{Root: root}), map[string]any{"path": "nope.txt"})

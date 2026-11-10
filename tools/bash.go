@@ -14,7 +14,9 @@ import (
 
 // BashConfig configures the bash tool.
 type BashConfig struct {
-	Root    string
+	Root string
+	// Roots are further directories an absolute path may reach besides Root.
+	Roots   []string
 	Sandbox sandbox.Sandbox
 	// Timeout caps a single command. Zero means DefaultBashTimeout.
 	Timeout time.Duration
@@ -124,7 +126,7 @@ func (t *bashTool) Execute(ctx context.Context, raw json.RawMessage) (agent.Tool
 		return failure("command is required")
 	}
 
-	dir, err := resolveWithinRoot(t.cfg.Root, args.Cwd)
+	dir, err := resolveWithinRoot(t.cfg.Root, args.Cwd, t.cfg.Roots...)
 	if err != nil {
 		return failure("%v", err)
 	}

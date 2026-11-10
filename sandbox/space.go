@@ -90,16 +90,33 @@ func (s *Space) Close() error {
 	return nil
 }
 
-// inside maps a host directory under Root to its path in the space.
+// inside maps a host directory under Root, or under one of Mounts, to its
+// path in the space.
 func (s *Space) inside(dir string) (string, error) {
 	if dir == "" {
 		return SpaceWorkdir, nil
 	}
-	rel, err := filepath.Rel(s.Root, dir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("sandbox: %s is outside the workspace the space sees", dir)
+	if rel, ok := under(s.Root, dir); ok {
+		return filepath.Join(SpaceWorkdir, rel), nil
 	}
-	return filepath.Join(SpaceWorkdir, rel), nil
+	for _, m := range s.Mounts {
+		parts := strings.Split(m, ":")
+		if len(parts) < 2 {
+			continue
+		}
+		if rel, ok := under(parts[0], dir); ok {
+			return filepath.Join(parts[1], rel), nil
+		}
+	}
+	return "", fmt.Errorf("sandbox: %s is outside the workspace the space sees", dir)
+}
+
+func under(base, dir string) (string, bool) {
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // start opens the space, or reopens it when it stopped, and waits until a
