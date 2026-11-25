@@ -161,7 +161,8 @@ func Load(root string, maxItems int) (agent.MemoryExtraction, error) {
 	// established rather than the oldest, possibly superseded, entries.
 	decisions := dedupLastN(entriesReversed(entries, func(e entry) []string { return e.Extract.Decisions }), maxItems)
 	constraints := dedupLastN(entriesReversed(entries, func(e entry) []string { return e.Extract.Constraints }), maxItems)
-	return agent.MemoryExtraction{Decisions: decisions, Constraints: constraints}, nil
+	facts := dedupLastN(entriesReversed(entries, func(e entry) []string { return e.Extract.Facts }), maxItems)
+	return agent.MemoryExtraction{Decisions: decisions, Constraints: constraints, Facts: facts}, nil
 }
 
 func entriesReversed(entries []entry, field func(entry) []string) []string {

@@ -40,3 +40,48 @@ func (m MemoryExtraction) Render() string {
 func (m MemoryExtraction) IsEmpty() bool {
 	return len(m.Decisions) == 0 && len(m.Constraints) == 0 && len(m.Facts) == 0
 }
+
+func mergeMemory(a, b MemoryExtraction) MemoryExtraction {
+	return MemoryExtraction{
+		Decisions:   appendNew(a.Decisions, b.Decisions),
+		Constraints: appendNew(a.Constraints, b.Constraints),
+		Facts:       appendNew(a.Facts, b.Facts),
+	}
+}
+
+func appendNew(to, items []string) []string {
+	seen := make(map[string]bool, len(to))
+	for _, s := range to {
+		seen[s] = true
+	}
+	for _, s := range items {
+		if !seen[s] {
+			seen[s] = true
+			to = append(to, s)
+		}
+	}
+	return to
+}
+
+// parseMemory reads back what Render wrote.
+func parseMemory(text string) MemoryExtraction {
+	var m MemoryExtraction
+	var into *[]string
+	for _, line := range strings.Split(text, "\n") {
+		switch strings.TrimSpace(line) {
+		case "Decisions:":
+			into = &m.Decisions
+			continue
+		case "Constraints:":
+			into = &m.Constraints
+			continue
+		case "Facts:":
+			into = &m.Facts
+			continue
+		}
+		if item, ok := strings.CutPrefix(line, "- "); ok && into != nil {
+			*into = append(*into, item)
+		}
+	}
+	return m
+}

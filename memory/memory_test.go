@@ -77,7 +77,7 @@ func TestStoreAppendThenLoadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(agent.MemoryExtraction{Decisions: []string{"picked PostgreSQL"}}); err != nil {
+	if err := store.Append(agent.MemoryExtraction{Decisions: []string{"picked PostgreSQL"}, Facts: []string{"the API is on port 4100"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,6 +87,9 @@ func TestStoreAppendThenLoadRoundTrips(t *testing.T) {
 	}
 	if len(got.Decisions) != 1 || got.Decisions[0] != "picked PostgreSQL" {
 		t.Fatalf("Load() = %+v, want the appended decision", got)
+	}
+	if len(got.Facts) != 1 || got.Facts[0] != "the API is on port 4100" {
+		t.Fatalf("Load() facts = %v, want the appended fact", got.Facts)
 	}
 }
 

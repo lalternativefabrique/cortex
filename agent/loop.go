@@ -103,6 +103,9 @@ type Config struct {
 	// Compactor shrinks the history when the threshold is crossed. Nil with
 	// a non-zero ContextWindow installs a SummaryCompactor over Client.
 	Compactor Compactor
+	// WorkState fills the repository section of the handoff a SummaryCompactor
+	// writes. Nil leaves that section out.
+	WorkState WorkState
 	// EvictKeepRecent is how many trailing messages are exempt from
 	// eviction. Zero means DefaultEvictKeepRecent.
 	EvictKeepRecent int
@@ -194,7 +197,12 @@ func NewRunner(cfg Config) (*Runner, error) {
 		cfg.EvictKeepRecent = DefaultEvictKeepRecent
 	}
 	if cfg.Compactor == nil && cfg.ContextWindow > 0 {
-		cfg.Compactor = &SummaryCompactor{Client: cfg.Client}
+		cfg.Compactor = &SummaryCompactor{Client: cfg.Client, WorkState: cfg.WorkState}
+	}
+	if sc, ok := cfg.Compactor.(*SummaryCompactor); ok && sc.WorkState == nil && cfg.WorkState != nil {
+		withState := *sc
+		withState.WorkState = cfg.WorkState
+		cfg.Compactor = &withState
 	}
 	if cfg.Callback == nil {
 		cfg.Callback = NopCallback{}
@@ -373,6 +381,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 				result.Citations = citations(resp.Text, read, check)
 			}
 			result.Text = resp.Text
+			result.Messages = history
 			return result, nil
 		}
 
@@ -420,7 +429,7 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 	}
 
 	result.Truncated = true
-	return r.closeBounded(ctx, history, result, boundSteps)
+	return r.closeBounded(ctx, answerPending(history, nil), result, boundSteps)
 }
 
 const (
@@ -445,13 +454,15 @@ func answerPending(history []Message, calls []ToolCall) []Message {
 }
 
 func (r *Runner) closeBounded(ctx context.Context, history []Message, result Result, bound string) (Result, error) {
+	result.Messages = history
 	if !r.cfg.CloseOnBound {
 		return result, nil
 	}
 	notice := Message{Role: RoleUser, Content: fmt.Sprintf(closingNotice, bound)}
+	asked := append(slices.Clone(history), notice)
 	resp, err := r.complete(ctx, CompletionRequest{
 		System:   r.cfg.System,
-		Messages: append(history, notice),
+		Messages: asked,
 	})
 	result.Usage.Add(resp.Usage)
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
@@ -462,7 +473,9 @@ func (r *Runner) closeBounded(ctx context.Context, history []Message, result Res
 		r.cfg.Callback.OnError(fmt.Errorf("closing answer: %w", err))
 		return result, nil
 	}
-	r.record(Message{Role: RoleAssistant, Content: resp.Text})
+	closing := Message{Role: RoleAssistant, Content: resp.Text}
+	r.record(closing)
+	result.Messages = append(asked, closing)
 	result.Text = resp.Text
 	result.Closed = true
 	return result, nil
@@ -700,6 +713,11 @@ func (r *Runner) maybeCompact(ctx context.Context, history []Message, step int) 
 	_, toolTokens = r.offered(compacted)
 	after := EstimateMessages(r.cfg.System, compacted) + toolTokens
 	r.cfg.Logger.InfoContext(ctx, "agent: history compacted", "step", step, "tokens_before", used, "tokens_after", after, "threshold_tokens", threshold)
+	if cb, ok := r.cfg.Callback.(HandoffCallback); ok {
+		if h, found := HandoffOf(compacted); found {
+			cb.OnHandoff(h)
+		}
+	}
 	r.cfg.Callback.OnCompactEnd(used, after)
 	return compacted, true, usage, nil
 }

@@ -9,6 +9,7 @@
 package promptctx
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/lalternativefabrique/cortex/agent"
 	"github.com/lalternativefabrique/cortex/memory"
 	"github.com/lalternativefabrique/cortex/session"
 )
@@ -228,7 +230,11 @@ func branchName(root string) string {
 }
 
 func git(root string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	return gitContext(context.Background(), root, args...)
+}
+
+func gitContext(ctx context.Context, root string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
@@ -256,4 +262,52 @@ func topLevel(root string) string {
 		fmt.Fprintf(&b, "  %s\n", name)
 	}
 	return b.String()
+}
+
+// GitState reads the repository at Root for a handoff. It implements
+// agent.WorkState.
+type GitState struct {
+	Root string
+	// Base is what the branch is compared with. Empty means the remote's
+	// default branch, then main, then master.
+	Base string
+}
+
+const maxListedCommits = 50
+
+func (g GitState) State(ctx context.Context) (agent.RepoState, error) {
+	if _, err := gitContext(ctx, g.Root, "rev-parse", "--git-dir"); err != nil {
+		return agent.RepoState{}, fmt.Errorf("not a git repository: %s", g.Root)
+	}
+	state := agent.RepoState{Branch: branchName(g.Root), Base: g.base(ctx)}
+	if status, err := gitContext(ctx, g.Root, "status", "--porcelain"); err == nil {
+		state.Status = status
+	}
+	if state.Base == "" {
+		return state, nil
+	}
+	if log, err := gitContext(ctx, g.Root, "log", "--oneline", fmt.Sprintf("-%d", maxListedCommits), state.Base+"..HEAD"); err == nil && log != "" {
+		state.Commits = strings.Split(log, "\n")
+	}
+	if fork, err := gitContext(ctx, g.Root, "merge-base", state.Base, "HEAD"); err == nil {
+		if stat, err := gitContext(ctx, g.Root, "diff", "--stat", fork); err == nil {
+			state.Diffstat = stat
+		}
+	}
+	return state, nil
+}
+
+func (g GitState) base(ctx context.Context) string {
+	if g.Base != "" {
+		return g.Base
+	}
+	if ref, err := gitContext(ctx, g.Root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil && ref != "" {
+		return ref
+	}
+	for _, candidate := range []string{"main", "master"} {
+		if _, err := gitContext(ctx, g.Root, "rev-parse", "--verify", "--quiet", candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }

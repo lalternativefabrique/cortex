@@ -33,11 +33,11 @@ func TestSummaryCompactorKeepsTaskAndRecentTurns(t *testing.T) {
 	if len(out) >= len(in) {
 		t.Fatalf("compaction produced %d messages from %d", len(out), len(in))
 	}
-	if out[0].Content != in[0].Content {
-		t.Fatal("the opening task statement was dropped")
+	if out[0].Handoff == nil || out[0].Handoff.Task != in[0].Content {
+		t.Fatalf("the opening task statement was dropped: %+v", out[0])
 	}
-	if !strings.Contains(out[1].Content, "the summary") {
-		t.Fatalf("summary is missing: %q", out[1].Content)
+	if !strings.Contains(out[0].Content, in[0].Content) || !strings.Contains(out[0].Content, "the summary") {
+		t.Fatalf("the handoff lacks the task or the summary: %q", out[0].Content)
 	}
 	if out[len(out)-1].Content != in[len(in)-1].Content {
 		t.Fatal("the most recent turn was not kept verbatim")
