@@ -12,8 +12,11 @@ import (
 )
 
 // client is the model with its fallbacks behind it.
-func (s *Server) client(effort string) (agent.Client, error) {
+func (s *Server) client(effort, model string) (agent.Client, error) {
 	provider := s.cfg.Provider
+	if model != "" {
+		provider.Model = model
+	}
 	if effort != "" {
 		provider.ReasoningEffort = effort
 	}

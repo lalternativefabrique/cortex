@@ -455,6 +455,10 @@ type TurnRequest struct {
 	// ReasoningEffort is the person's choice for this turn alone: high,
 	// medium, low or none. Empty keeps the server's own.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Model is the person's choice of model for this turn, sent to the
+	// provider as is. Empty keeps the server's own. A conversation that keeps
+	// one model keeps the provider's prompt cache.
+	Model string `json:"model,omitempty"`
 }
 
 // Message is one turn of the conversation, in the shape the caller stores it.
@@ -591,7 +595,11 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		_ = conv.store.Append(asking)
 	}
 
-	client, err := s.client(effort)
+	model := s.cfg.Provider.Model
+	if m := strings.TrimSpace(req.Model); m != "" {
+		model = m
+	}
+	client, err := s.client(effort, model)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -749,7 +757,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	conv.history = append(conv.history, answered)
 	if conv.store != nil {
 		_ = conv.store.Append(answered)
-		_ = conv.store.AppendUsage(res.Usage, s.cfg.Provider.Model, time.Now())
+		_ = conv.store.AppendUsage(res.Usage, model, time.Now())
 	}
 	conv.usage.Input += res.Usage.Input
 	conv.usage.CachedInput += res.Usage.CachedInput
@@ -772,8 +780,8 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			SessionInputTokens:       session.Input,
 			SessionCachedInputTokens: session.CachedInput,
 			SessionOutputTokens:      session.Output,
-			Cost:                     s.priced(r.Context(), s.cfg.Provider.Model, res.Usage),
-			SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, session),
+			Cost:                     s.priced(r.Context(), model, res.Usage),
+			SessionCost:              s.priced(r.Context(), model, session),
 			Seconds:                  time.Since(started).Seconds(),
 		},
 	})
