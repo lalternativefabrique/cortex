@@ -72,6 +72,12 @@ type Message struct {
 	// that call tools (DeepSeek) expect it back on every later request of the
 	// run; without it each step rebuilds its plan from scratch.
 	Reasoning string
+	// Task marks the message that states the task. Compaction keeps it
+	// verbatim, wherever it sits in the history.
+	Task bool `json:",omitempty"`
+	// Handoff is set on the message a compaction left in place of the turns
+	// it summarised; Content is its rendering.
+	Handoff *Handoff `json:",omitempty"`
 }
 
 // ToolCall is a tool invocation requested by the model.
@@ -140,6 +146,10 @@ type Result struct {
 	// Repeats counts steps whose every call repeated the step before, which
 	// were answered with a notice instead of being run.
 	Repeats int
+	// Messages is the history the run ended on, compactions included, for a
+	// host that carries the conversation into its next turn. Every tool call
+	// in it has its result. Nil when the run failed.
+	Messages []Message
 	// Compactions counts how many times the history was summarised.
 	Compactions int
 	// Recoveries counts turns where the model wrote a tool call as text and

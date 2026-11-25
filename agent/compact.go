@@ -21,8 +21,8 @@ type Compactor interface {
 	Compact(ctx context.Context, system string, messages []Message) ([]Message, *MemoryExtraction, Usage, error)
 }
 
-// SummaryCompactor replaces the older turns with a model-written summary and
-// keeps the most recent ones verbatim.
+// SummaryCompactor replaces the older turns with a Handoff and keeps the
+// most recent ones verbatim.
 //
 // Compaction is deliberately rare rather than continuous. Rewriting the
 // middle of the prompt invalidates the inference server's cached prefix from
@@ -37,28 +37,24 @@ type SummaryCompactor struct {
 	// recent turns are where the actual work is; summarising them loses the
 	// detail the model is actively using.
 	KeepRecent int
-	// KeepFirst is how many leading messages survive verbatim. The opening
-	// user message states the task, and losing it lets the agent drift.
+	// Deprecated: the task is found by Message.Task, and it and every later
+	// instruction are carried verbatim in the handoff. KeepFirst is ignored.
 	KeepFirst int
+	// WorkState fills the handoff's repository section. Nil leaves it out.
+	WorkState WorkState
 }
 
 const (
 	DefaultKeepRecent = 6
-	DefaultKeepFirst  = 1
+	// Deprecated: see SummaryCompactor.KeepFirst.
+	DefaultKeepFirst = 1
 )
 
-const summaryInstruction = `You are compacting an agent transcript so work can continue in a smaller context window.
-
-Write a summary that lets the agent resume without re-reading what was cut. Cover:
-- the task as originally stated
-- what has been established about the codebase: files, symbols, structure that matter
-- what has been changed so far, and where
-- what was tried and did not work, so it is not retried
-- what remains to be done
-
-Be specific — name files, functions and errors. Omit narration of which tools ran. Write prose, no preamble.
-
-If the transcript contains decisions, constraints, or facts worth preserving exactly, call record_memory with them in addition to writing the summary.`
+const (
+	maxSummarySystem = 4000
+	maxSummaryFailed = 4000
+	maxSummaryOther  = 1500
+)
 
 // memoryExtractionTool exists only to shape the schema offered to
 // summarize's extraction call. It is never registered on a Runner and its
@@ -75,67 +71,131 @@ func (memoryExtractionTool) Execute(context.Context, json.RawMessage) (ToolResul
 	return ToolResult{}, fmt.Errorf("memoryExtractionTool.Execute called: this tool is schema-only and must never run")
 }
 
-// Compact summarises the middle of the conversation, pinning a prior
-// extraction (RoleMemory) verbatim rather than folding it back into the
-// prose that gets summarised — otherwise a second compaction re-summarises
-// an already-summarised text, and detail is lost a second time for free.
+// Compact replaces everything before the recent turns with one user
+// message: the rendered Handoff. The recent turns it keeps start on an
+// assistant message, so no two user messages ever follow each other.
 func (c *SummaryCompactor) Compact(ctx context.Context, system string, messages []Message) ([]Message, *MemoryExtraction, Usage, error) {
 	keepRecent := c.KeepRecent
 	if keepRecent <= 0 {
 		keepRecent = DefaultKeepRecent
 	}
-	keepFirst := c.KeepFirst
-	if keepFirst <= 0 {
-		keepFirst = DefaultKeepFirst
-	}
-
-	if len(messages) <= keepFirst+keepRecent {
+	if len(messages) <= keepRecent+1 {
 		return messages, nil, Usage{}, nil
 	}
-
-	head := messages[:keepFirst]
-	body, pinned := extractPinned(messages[keepFirst : len(messages)-keepRecent])
-	tail := messages[len(messages)-keepRecent:]
-
-	summary, mem, usage, err := c.summarize(ctx, body)
+	cut := tailStart(messages, len(messages)-keepRecent)
+	h, mem, usage, err := c.Handoff(ctx, system, messages[:cut])
 	if err != nil {
-		return nil, nil, Usage{}, err
+		return nil, nil, usage, err
 	}
-
-	out := make([]Message, 0, keepFirst+len(pinned)+2+len(tail))
-	out = append(out, head...)
-	out = append(out, pinned...)
-	if mem != nil && !mem.IsEmpty() {
-		out = append(out, Message{Role: RoleMemory, Content: mem.Render()})
-	}
-	out = append(out, Message{
-		Role:    RoleUser,
-		Content: "[Earlier turns were compacted to fit the context window. Summary of what happened:]\n\n" + summary,
-	})
+	out := make([]Message, 0, 1+len(messages)-cut)
+	out = append(out, Message{Role: RoleUser, Content: h.Render(), Handoff: &h})
 	// A tool message whose matching assistant turn was cut would reference a
 	// tool_call_id the provider can no longer resolve, which most reject.
-	out = append(out, dropOrphanToolMessages(tail)...)
+	out = append(out, dropOrphanToolMessages(messages[cut:])...)
 	return out, mem, usage, nil
 }
 
-// extractPinned pulls prior RoleMemory messages out of a slice about to be
-// summarised, so they are carried forward untouched instead of being fed
-// back into another round of summarisation.
-func extractPinned(messages []Message) (rest, pinned []Message) {
-	rest = make([]Message, 0, len(messages))
-	for _, m := range messages {
-		if m.Role == RoleMemory {
-			pinned = append(pinned, m)
-			continue
+func tailStart(messages []Message, from int) int {
+	for i := max(from, 0); i < len(messages); i++ {
+		if messages[i].Role == RoleAssistant {
+			return i
 		}
-		rest = append(rest, m)
 	}
-	return rest, pinned
+	return len(messages)
 }
 
-func (c *SummaryCompactor) summarize(ctx context.Context, middle []Message) (string, *MemoryExtraction, Usage, error) {
+// Handoff writes the document a different agent takes the work over from.
+// The task, the instructions received since and the pinned memory are
+// copied, never summarised; the model writes the rest from the transcript.
+func (c *SummaryCompactor) Handoff(ctx context.Context, system string, messages []Message) (Handoff, *MemoryExtraction, Usage, error) {
+	h, prior, transcript := collectFacts(messages)
+	if c.WorkState != nil {
+		if repo, err := c.WorkState.State(ctx); err == nil {
+			h.Repo = &repo
+		}
+	}
+	text, mem, usage, err := c.summarize(ctx, system, h, prior, transcript)
+	if err != nil {
+		return Handoff{}, nil, usage, err
+	}
+	written := parseModelSections(text)
+	written.Task, written.Instructions, written.Repo = h.Task, h.Instructions, h.Repo
+	written.Memory = h.Memory
+	if mem != nil {
+		written.Memory = mergeMemory(written.Memory, *mem)
+	}
+	return written, mem, usage, nil
+}
+
+// collectFacts separates what is copied verbatim from what is summarised.
+// The task is the message marked Task, or the first user message when none
+// is marked; a prior handoff carries the task and instructions it held.
+func collectFacts(messages []Message) (h Handoff, prior *Handoff, transcript []Message) {
+	marked := false
+	for _, m := range messages {
+		marked = marked || m.Task || m.Handoff != nil
+	}
+	found := false
+	for _, m := range messages {
+		switch {
+		case m.Handoff != nil:
+			p := *m.Handoff
+			prior = &p
+			h.Task = p.Task
+			h.Instructions = append([]string(nil), p.Instructions...)
+			h.Memory = mergeMemory(h.Memory, p.Memory)
+			found = true
+		case m.Role == RoleMemory:
+			h.Memory = mergeMemory(h.Memory, parseMemory(m.Content))
+		case m.Role == RoleUser && !found && (m.Task || !marked):
+			h.Task = m.Content
+			found = true
+			transcript = append(transcript, Message{Role: RoleUser, Content: "[the task, copied above]"})
+		case m.Role == RoleUser && found && !loopNotice(m.Content) && strings.TrimSpace(m.Content) != "":
+			h.Instructions = append(h.Instructions, m.Content)
+			transcript = append(transcript, Message{Role: RoleUser, Content: fmt.Sprintf("[instruction %d, copied above]", len(h.Instructions))})
+		default:
+			transcript = append(transcript, m)
+		}
+	}
+	return h, prior, transcript
+}
+
+// loopNotice reports a user message the loop wrote itself, which is not an
+// instruction from the person or the orchestrator.
+func loopNotice(content string) bool {
+	for _, format := range []string{leakedCallNotice, unsourcedNotice, closingNotice} {
+		if prefix, _, _ := strings.Cut(format, "%"); strings.HasPrefix(content, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *SummaryCompactor) summarize(ctx context.Context, system string, h Handoff, prior *Handoff, transcript []Message) (string, *MemoryExtraction, Usage, error) {
 	var b strings.Builder
-	for _, m := range middle {
+	if s := strings.TrimSpace(system); s != "" {
+		if len(s) > maxSummarySystem {
+			s = s[:maxSummarySystem] + " ...[cut]"
+		}
+		fmt.Fprintf(&b, "The agent worked under this system prompt (truncated):\n\n%s\n\n", s)
+	}
+	b.WriteString("These are copied into the handoff verbatim. They are shown for context only; do not restate them.\n\n")
+	fmt.Fprintf(&b, "TASK:\n%s\n\n", h.Task)
+	for i, text := range h.Instructions {
+		fmt.Fprintf(&b, "INSTRUCTION %d:\n%s\n\n", i+1, text)
+	}
+	if h.Repo != nil {
+		fmt.Fprintf(&b, "REPOSITORY STATE NOW:\n%s\n", h.Repo.render())
+	}
+	if prior != nil {
+		written := *prior
+		written.Task, written.Instructions, written.Repo, written.Memory = "", nil, nil, MemoryExtraction{}
+		fmt.Fprintf(&b, "PREVIOUS HANDOFF (your sections supersede it; carry forward what still holds):\n\n%s\n", written.modelSections())
+	}
+	b.WriteString("TRANSCRIPT SINCE:\n\n")
+	calls := map[string]ToolCall{}
+	for _, m := range transcript {
 		switch m.Role {
 		case RoleUser:
 			fmt.Fprintf(&b, "USER: %s\n\n", m.Content)
@@ -144,21 +204,23 @@ func (c *SummaryCompactor) summarize(ctx context.Context, middle []Message) (str
 				fmt.Fprintf(&b, "ASSISTANT: %s\n", m.Content)
 			}
 			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&b, "CALLED %s(%s)\n", tc.Name, truncateForSummary(string(tc.Arguments)))
+				calls[tc.ID] = tc
+				fmt.Fprintf(&b, "CALLED %s(%s)\n", tc.Name, truncateForSummary(string(tc.Arguments), maxSummaryOther))
 			}
 			b.WriteByte('\n')
 		case RoleTool:
-			fmt.Fprintf(&b, "RESULT: %s\n\n", truncateForSummary(m.Content))
+			limit := maxSummaryOther
+			if failedOrVerified(calls[m.ToolCallID], m.Content) {
+				limit = maxSummaryFailed
+			}
+			fmt.Fprintf(&b, "RESULT: %s\n\n", truncateForSummary(m.Content, limit))
 		}
 	}
 
 	req := CompletionRequest{
-		System: summaryInstruction,
-		Messages: []Message{{
-			Role:    RoleUser,
-			Content: "Transcript to summarise:\n\n" + b.String(),
-		}},
-		Tools: []Tool{memoryExtractionTool{}},
+		System:   HandoffInstruction,
+		Messages: []Message{{Role: RoleUser, Content: b.String()}},
+		Tools:    []Tool{memoryExtractionTool{}},
 	}
 	resp, err := c.Client.Complete(ctx, req)
 	if err != nil {
@@ -169,7 +231,7 @@ func (c *SummaryCompactor) summarize(ctx context.Context, middle []Message) (str
 	if strings.TrimSpace(resp.Text) == "" {
 		// Offered record_memory, a model may answer with the call alone and
 		// stop on tool use; ask again with no tool so it can only write.
-		retry, err := c.Client.Complete(ctx, CompletionRequest{System: summaryInstruction, Messages: req.Messages})
+		retry, err := c.Client.Complete(ctx, CompletionRequest{System: HandoffInstruction, Messages: req.Messages})
 		if err != nil {
 			return "", nil, usage, fmt.Errorf("summarise transcript: %w", err)
 		}
@@ -180,6 +242,24 @@ func (c *SummaryCompactor) summarize(ctx context.Context, middle []Message) (str
 		return "", nil, usage, fmt.Errorf("summarise transcript: model returned nothing")
 	}
 	return resp.Text, mem, usage, nil
+}
+
+// failedOrVerified reports a tool result worth more of the summariser's
+// attention: an error, or the output of a build, test or check.
+func failedOrVerified(call ToolCall, content string) bool {
+	lower := strings.ToLower(content)
+	for _, marker := range []string{"error", "fail", "panic:"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	args := strings.ToLower(string(call.Arguments))
+	for _, marker := range []string{"test", "build", "vet", "lint", "check", " ci"} {
+		if strings.Contains(args, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractMemory reads the model's record_memory call, if it made one. The
@@ -221,10 +301,10 @@ func dropOrphanToolMessages(messages []Message) []Message {
 	return out
 }
 
-func truncateForSummary(s string) string {
-	const max = 1500
-	if len(s) <= max {
+func truncateForSummary(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	return s[:max] + " ...[cut]"
+	cut, _ := TruncateMiddle(s, limit)
+	return cut
 }

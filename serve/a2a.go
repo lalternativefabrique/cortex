@@ -130,7 +130,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 			agent.Message{Role: agent.RoleAssistant, Content: "Noted. What would you like to do?"},
 		)
 	}
-	asking := agent.Message{Role: agent.RoleUser, Content: asked}
+	asking := askingMessage(conv.history, asked, nil)
 	conv.history = append(conv.history, asking)
 	if conv.store != nil {
 		_ = conv.store.Append(asking)
@@ -147,6 +147,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 		System:        e.system("", false),
 		MaxSteps:      e.cfg.MaxSteps,
 		ContextWindow: e.cfg.ContextWindow,
+		WorkState:     e.workState(),
 	})
 	if err != nil {
 		return agent.Result{}, err
@@ -160,7 +161,7 @@ func (e *Server) runTask(ctx context.Context, contextID, asked string) (agent.Re
 
 	e.mu.Lock()
 	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}
-	conv.history = append(conv.history, answered)
+	conv.history = res.Messages
 	if conv.store != nil {
 		_ = conv.store.Append(answered)
 	}

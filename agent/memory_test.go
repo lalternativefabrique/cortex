@@ -32,14 +32,8 @@ func TestSummaryCompactorExtractsMemoryWhenModelCallsTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var found bool
-	for _, m := range out {
-		if m.Role == RoleMemory && strings.Contains(m.Content, "main.go has func main") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("no RoleMemory message with the extracted fact in output: %+v", out)
+	if !strings.Contains(out[0].Content, "main.go has func main") {
+		t.Fatalf("the handoff lacks the extracted fact: %q", out[0].Content)
 	}
 	if mem == nil || len(mem.Facts) != 1 || mem.Facts[0] != "main.go has func main" {
 		t.Fatalf("Compact() returned mem = %+v, want the extracted fact", mem)
@@ -99,14 +93,13 @@ func TestSummaryCompactorPreservesPinnedMemoryAcrossRepeatedCompactions(t *testi
 		t.Fatal(err)
 	}
 
-	var stillPresent bool
 	for _, m := range out {
-		if m.Role == RoleMemory && m.Content == pinned.Content {
-			stillPresent = true
+		if m.Role == RoleMemory {
+			t.Fatalf("pinned memory stayed a message of its own instead of joining the handoff: %+v", out)
 		}
 	}
-	if !stillPresent {
-		t.Fatalf("pinned memory did not survive a second compaction: %+v", out)
+	if !strings.Contains(out[0].Content, "- picked PostgreSQL") {
+		t.Fatalf("pinned memory did not survive a second compaction: %q", out[0].Content)
 	}
 
 	sent := client.calls[0].Messages[0].Content

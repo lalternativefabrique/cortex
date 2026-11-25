@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -363,6 +364,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /reasoning", s.handleReasoning)
 	mux.HandleFunc("GET /context", s.handleContext)
 	mux.HandleFunc("GET /diff", s.handleDiff)
+	mux.HandleFunc("GET /handoff", s.handleHandoff)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
 	mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
 	mux.HandleFunc("POST /describe", s.handleDescribe)
@@ -459,7 +461,15 @@ type TurnRequest struct {
 	// provider as is. Empty keeps the server's own. A conversation that keeps
 	// one model keeps the provider's prompt cache.
 	Model string `json:"model,omitempty"`
+	// Handoff is the Markdown of a handoff (GET /handoff, or any agent.Handoff
+	// rendering) that opens a new conversation taking that work over. Message
+	// may then be empty.
+	Handoff string `json:"handoff,omitempty"`
 }
+
+// handoffResume is what a conversation opened on a handoff is asked when the
+// caller adds nothing.
+const handoffResume = "You are taking this work over. Check the repository state, then carry on with the next action."
 
 // Message is one turn of the conversation, in the shape the caller stores it.
 type Message struct {
@@ -479,14 +489,16 @@ type Event struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	// Tokens, Threshold and Before carry what an eviction or a compaction
 	// moved, for a window that shows how the history is being kept in size.
-	Tokens    int    `json:"tokens,omitempty"`
-	Threshold int    `json:"threshold,omitempty"`
-	Before    int    `json:"before,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Tool      string `json:"tool,omitempty"`
-	Args      string `json:"args,omitempty"`
-	Result    string `json:"result,omitempty"`
-	Err       string `json:"error,omitempty"`
+	Tokens    int `json:"tokens,omitempty"`
+	Threshold int `json:"threshold,omitempty"`
+	Before    int `json:"before,omitempty"`
+	// Handoff is the rendered handoff a compaction left, on compact_end.
+	Handoff string `json:"handoff,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Tool    string `json:"tool,omitempty"`
+	Args    string `json:"args,omitempty"`
+	Result  string `json:"result,omitempty"`
+	Err     string `json:"error,omitempty"`
 	// Usage arrives once, at the end: the caller records what the turn cost
 	// against the account it belongs to.
 	Usage *Usage `json:"usage,omitempty"`
@@ -533,7 +545,15 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		asked = "(files attached)"
 		question = asked
 	}
-	if asked == "" {
+	var seed *agent.Handoff
+	if text := strings.TrimSpace(req.Handoff); text != "" {
+		parsed := agent.ParseHandoff(text)
+		seed = &parsed
+		if question == "" {
+			question = parsed.Task
+		}
+	}
+	if asked == "" && seed == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a message is required"})
 		return
 	}
@@ -553,10 +573,16 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		asked = skill.Prompt(asked)
+		if asked != "" {
+			asked = skill.Prompt(asked)
+		}
 	}
 
 	id, conv := s.conversation(req)
+	if seed != nil && len(conv.history) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a handoff opens a new conversation"})
+		return
+	}
 	var titleHint string
 	if id != strings.TrimSpace(req.Conversation) {
 		titleHint = firstAsk(req)
@@ -583,7 +609,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	conv.files = mergeAttachments(conv.files, attached)
 	files := conv.files
 	s.mu.Unlock()
-	asking := agent.Message{Role: agent.RoleUser, Content: asked}
+	asking := askingMessage(conv.history, asked, seed)
 	conv.history = append(conv.history, asking)
 	if conv.store != nil {
 		// Where the work sits when this turn runs. A session outlives the
@@ -724,6 +750,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		// Without it the history only grows, and a long conversation ends
 		// against the model's limit rather than being compacted into itself.
 		ContextWindow:  s.cfg.ContextWindow,
+		WorkState:      s.workState(),
 		Stream:         true,
 		Callback:       sink,
 		MemoryRecorder: memRecorder,
@@ -746,15 +773,13 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	s.learn(r.Context(), client, conv.incognito)
 	sink.memory.Said(uuid.NewString(), "assistant", res.Text)
 	s.mu.Lock()
-	for _, text := range steered {
-		added := agent.Message{Role: agent.RoleUser, Content: text}
-		conv.history = append(conv.history, added)
-		if conv.store != nil {
-			_ = conv.store.Append(added)
+	if conv.store != nil {
+		for _, text := range steered {
+			_ = conv.store.Append(agent.Message{Role: agent.RoleUser, Content: text})
 		}
 	}
 	answered := agent.Message{Role: agent.RoleAssistant, Content: res.Text}
-	conv.history = append(conv.history, answered)
+	conv.history = res.Messages
 	if conv.store != nil {
 		_ = conv.store.Append(answered)
 		_ = conv.store.AppendUsage(res.Usage, model, time.Now())
@@ -786,6 +811,81 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	emit(Event{Kind: "done"})
+}
+
+// askingMessage is what the person just asked, as the history carries it.
+// The first ask of a conversation is its task; on a handoff, the handoff
+// holds the task and what was asked joins its instructions.
+func askingMessage(history []agent.Message, asked string, seed *agent.Handoff) agent.Message {
+	if seed == nil {
+		return agent.Message{Role: agent.RoleUser, Content: asked, Task: !hasTask(history)}
+	}
+	if asked != "" {
+		seed.Instructions = append(seed.Instructions, asked)
+	}
+	content := seed.Render()
+	if asked == "" {
+		content += "\n" + handoffResume
+	}
+	return agent.Message{Role: agent.RoleUser, Content: content, Handoff: seed}
+}
+
+func hasTask(history []agent.Message) bool {
+	for _, m := range history {
+		if m.Task || m.Handoff != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) workState() agent.WorkState {
+	if s.assistant() {
+		return nil
+	}
+	return promptctx.GitState{Root: s.cfg.Root}
+}
+
+// HandoffResponse is a conversation's work, written for another agent to take
+// over.
+type HandoffResponse struct {
+	Markdown string        `json:"markdown"`
+	Handoff  agent.Handoff `json:"handoff"`
+}
+
+// handleHandoff writes the handoff of a conversation without changing it,
+// with the compactor and the repository state a compaction would use.
+func (s *Server) handleHandoff(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("conversation"))
+	s.mu.Lock()
+	conv, ok := s.talks[id]
+	var history []agent.Message
+	var incognito bool
+	if ok {
+		history = slices.Clone(conv.history)
+		incognito = conv.incognito
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such conversation"})
+		return
+	}
+	if len(history) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "the conversation has nothing to hand off yet"})
+		return
+	}
+	client, err := s.client("", "")
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	compactor := &agent.SummaryCompactor{Client: client, WorkState: s.workState()}
+	h, _, _, err := compactor.Handoff(r.Context(), s.system("", incognito), history)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, HandoffResponse{Markdown: h.Render(), Handoff: h})
 }
 
 // system prefixes the caller's instructions with what this machine is.
@@ -1219,6 +1319,9 @@ func firstAsk(req TurnRequest) string {
 	if len(req.Messages) > 0 {
 		return strings.TrimSpace(req.Messages[len(req.Messages)-1].Content)
 	}
+	if h := strings.TrimSpace(req.Handoff); h != "" {
+		return agent.ParseHandoff(h).Task
+	}
 	return ""
 }
 
@@ -1272,6 +1375,7 @@ type eventSink struct {
 	memory    *recall.Recorder
 	mu        sync.Mutex
 	journaled []JournalToolCall
+	handoff   string
 }
 
 func (s *eventSink) toolsJournaled() []JournalToolCall {
@@ -1322,8 +1426,18 @@ func (s *eventSink) OnCompactStart(usedTokens, thresholdTokens int) {
 	s.emit(Event{Kind: "compact_start", Step: s.step, Tokens: usedTokens, Threshold: thresholdTokens})
 }
 
+func (s *eventSink) OnHandoff(h agent.Handoff) {
+	s.mu.Lock()
+	s.handoff = h.Render()
+	s.mu.Unlock()
+}
+
 func (s *eventSink) OnCompactEnd(beforeTokens, afterTokens int) {
-	s.emit(Event{Kind: "compact_end", Step: s.step, Tokens: afterTokens, Before: beforeTokens})
+	s.mu.Lock()
+	handoff := s.handoff
+	s.handoff = ""
+	s.mu.Unlock()
+	s.emit(Event{Kind: "compact_end", Step: s.step, Tokens: afterTokens, Before: beforeTokens, Handoff: handoff})
 }
 
 // OnSteer tells the window that what the person added was handed to the

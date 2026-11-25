@@ -1,6 +1,7 @@
 package promptctx
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -241,5 +242,49 @@ func TestWorkspaceSurvivesOutsideGit(t *testing.T) {
 	got := Workspace(t.TempDir())
 	if got == "" {
 		t.Fatal("Workspace returned nothing for a non-git directory")
+	}
+}
+
+func TestGitStateReportsTheBranchAgainstItsBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "t")
+	run("commit", "-q", "--allow-empty", "-m", "base")
+	run("checkout", "-q", "-b", "feat/parse")
+	os.WriteFile(filepath.Join(root, "parse.go"), []byte("package parse\n"), 0o644)
+	run("add", "parse.go")
+	run("commit", "-q", "-m", "feat: add the parser")
+	os.WriteFile(filepath.Join(root, "dirty.go"), []byte("package parse\n"), 0o644)
+
+	got, err := GitState{Root: root}.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "feat/parse" || got.Base != "main" {
+		t.Fatalf("branch %q on base %q, want feat/parse on main", got.Branch, got.Base)
+	}
+	if len(got.Commits) != 1 || !strings.Contains(got.Commits[0], "feat: add the parser") {
+		t.Fatalf("commits = %q", got.Commits)
+	}
+	if !strings.Contains(got.Status, "dirty.go") || !strings.Contains(got.Diffstat, "parse.go") {
+		t.Fatalf("status %q, diffstat %q", got.Status, got.Diffstat)
+	}
+}
+
+func TestGitStateRefusesADirectoryOutsideGit(t *testing.T) {
+	if _, err := (GitState{Root: t.TempDir()}).State(context.Background()); err == nil {
+		t.Fatal("a directory outside git reported a repository state")
 	}
 }
