@@ -2,7 +2,7 @@
 
 Go SDK for building agents and running them behind [A2A](https://a2a-protocol.org): a bounded agent loop, a permission layer, MCP tools, memory, and a server that scales from one process to a NATS cluster.
 
-Cortex works with any OpenAI-compatible chat-completions provider. It is the engine under [Cortext](https://cortext.lalter.fr/decouvrir).
+Cortex works with any OpenAI-compatible chat-completions provider. It is the engine under [Cortext](https://pro.kaiin.fr/decouvrir).
 
 ```bash
 go get github.com/lalternativefabrique/cortex
