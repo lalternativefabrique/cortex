@@ -249,7 +249,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Describer != nil {
 		srv.describer = cfg.Describer
 		srv.tools = append(srv.tools, tools.NewDescribeImage(tools.ImageConfig{
-			Root: cfg.Root, Describer: cfg.Describer,
+			Root: cfg.Root, Roots: append(append([]string(nil), cfg.Roots...), cfg.ReadRoots...), Describer: cfg.Describer,
 		}))
 	}
 	srv.tools = append(srv.tools, cfg.Tools...)
