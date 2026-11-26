@@ -51,6 +51,10 @@ type Config struct {
 	// path, such as the workspace's own git worktrees. The sandbox has to
 	// see them too.
 	Roots []string
+	// ReadRoots are directories the agent may read, search and list by
+	// absolute path but never edit or write, such as the person's other
+	// workspaces. The sandbox mounts them read-only.
+	ReadRoots []string
 	// Instructions, when set, makes this an assistant rather than a coding
 	// agent. They replace the coding agent's prompt and each MCP server's own
 	// instructions follow them; the conversation does not open on the
@@ -287,10 +291,11 @@ func (s *Server) deferredTools() []agent.Toolset {
 
 func codingTools(cfg Config) []agent.Tool {
 	tracker := tools.NewReadTracker()
+	readable := append(append([]string(nil), cfg.Roots...), cfg.ReadRoots...)
 	return []agent.Tool{
-		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
-		tools.NewGrep(tools.GrepConfig{Root: cfg.Root, Roots: cfg.Roots, Approver: cfg.Approver}),
-		tools.NewGlob(tools.GlobConfig{Root: cfg.Root, Roots: cfg.Roots}),
+		tools.NewRead(tools.ReadConfig{Root: cfg.Root, Roots: readable, Tracker: tracker, Approver: cfg.Approver}),
+		tools.NewGrep(tools.GrepConfig{Root: cfg.Root, Roots: readable, Approver: cfg.Approver}),
+		tools.NewGlob(tools.GlobConfig{Root: cfg.Root, Roots: readable}),
 		tools.NewEdit(tools.EditConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewWrite(tools.WriteConfig{Root: cfg.Root, Roots: cfg.Roots, Tracker: tracker, Approver: cfg.Approver}),
 		tools.NewBash(tools.BashConfig{
