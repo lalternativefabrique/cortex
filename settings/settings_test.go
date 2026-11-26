@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,5 +102,33 @@ func TestNoListLeavesCommandsUnrestricted(t *testing.T) {
 	}
 	if s.Commands != nil {
 		t.Fatalf("commands = %v", s.Commands)
+	}
+}
+
+func TestDefaultsComeFirstAndAPersonCannotLiftTheirRefusals(t *testing.T) {
+	defaults := []byte("mode: auto\npermissions:\n  allow: [\"bash(go test *)\"]\n  deny: [\"bash(kubectl delete *)\"]\n")
+	person := filepath.Join(t.TempDir(), "settings.yaml")
+	if err := os.WriteFile(person, []byte("permissions:\n  allow: [\"bash(kubectl delete pod x)\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadOver(defaults, "ark defaults", []string{person})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Mode != tools.ModeAuto || s.ModeOrigin != "ark defaults" || len(s.Files) != 2 {
+		t.Fatalf("settings: %+v", s)
+	}
+	a := s.Approver("/r", nil)
+	if d, _ := a.Approve(context.Background(), tools.Request{Tool: "bash", Action: "kubectl delete pod x"}); d != tools.Deny {
+		t.Fatal("a person's allow lifted a refusal of the defaults")
+	}
+	if d, _ := a.Approve(context.Background(), tools.Request{Tool: "bash", Action: "go test ./..."}); d != tools.Allow {
+		t.Fatal("an allow of the defaults did not hold")
+	}
+}
+
+func TestMalformedDefaultsAreNamed(t *testing.T) {
+	if _, err := LoadOver([]byte("mode: maybe\n"), "ark defaults", nil); err == nil || !strings.Contains(err.Error(), "ark defaults") {
+		t.Fatalf("err = %v", err)
 	}
 }

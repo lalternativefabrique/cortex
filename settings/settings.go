@@ -94,7 +94,24 @@ func Load(app, root string) (Settings, error) {
 }
 
 func LoadFiles(paths []string) (Settings, error) {
+	return LoadOver(nil, "", paths)
+}
+
+// LoadOver reads defaults, the settings a product ships for its agent, then
+// paths over them. Rules accumulate and deny wins, so a person's file can add
+// to the defaults but never lift a refusal they make.
+func LoadOver(defaults []byte, origin string, paths []string) (Settings, error) {
 	s := Settings{Mode: tools.ModeAsk}
+	if len(defaults) > 0 {
+		var f File
+		if err := yaml.Unmarshal(defaults, &f); err != nil {
+			return s, fmt.Errorf("parse %s: %w", origin, err)
+		}
+		if err := s.add(f, origin); err != nil {
+			return s, fmt.Errorf("%s: %w", origin, err)
+		}
+		s.Files = append(s.Files, origin)
+	}
 	for _, path := range paths {
 		b, err := os.ReadFile(path)
 		if err != nil {
