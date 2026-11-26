@@ -92,10 +92,16 @@ type ToolCall struct {
 // CachedInput counts prompt-cache hits. It is the signal that the stable
 // prefix is holding: a run whose CachedInput stays near zero after the first
 // step has a prefix churning somewhere.
+//
+// CostEURMicros is what the providers said the calls cost, from the
+// cost_eur_micros a gateway adds to its usage; Unpriced counts the calls whose
+// provider said nothing, for which CostEURMicros falls short.
 type Usage struct {
-	Input       int
-	Output      int
-	CachedInput int
+	Input         int
+	Output        int
+	CachedInput   int
+	CostEURMicros int64
+	Unpriced      int
 }
 
 // Add accumulates another Usage into u.
@@ -103,6 +109,37 @@ func (u *Usage) Add(other Usage) {
 	u.Input += other.Input
 	u.Output += other.Output
 	u.CachedInput += other.CachedInput
+	u.CostEURMicros += other.CostEURMicros
+	u.Unpriced += other.Unpriced
+}
+
+// ReportedCost is the run's cost as its providers reported it, when every
+// call that consumed tokens carried one.
+func (u Usage) ReportedCost() (int64, bool) {
+	if u.Unpriced > 0 || u.Input+u.Output == 0 {
+		return 0, false
+	}
+	return u.CostEURMicros, true
+}
+
+type wireUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CostEURMicros *int64 `json:"cost_eur_micros"`
+}
+
+func (w wireUsage) usage() Usage {
+	u := Usage{Input: w.PromptTokens, Output: w.CompletionTokens, CachedInput: w.PromptTokensDetails.CachedTokens}
+	switch {
+	case w.CostEURMicros != nil:
+		u.CostEURMicros = *w.CostEURMicros
+	case u.Input+u.Output > 0:
+		u.Unpriced = 1
+	}
+	return u
 }
 
 // ToolCallTrace records what happened during a single tool invocation.

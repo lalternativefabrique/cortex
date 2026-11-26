@@ -40,13 +40,7 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-	} `json:"usage"`
+	Usage *wireUsage `json:"usage"`
 }
 
 // CompleteStream runs the request with stream=true and calls onDelta for each
@@ -128,11 +122,7 @@ func readSSE(r interface{ Read([]byte) (int, error) }, onDelta func(string)) (Co
 			continue
 		}
 		if chunk.Usage != nil {
-			out.Usage = Usage{
-				Input:       chunk.Usage.PromptTokens,
-				Output:      chunk.Usage.CompletionTokens,
-				CachedInput: chunk.Usage.PromptTokensDetails.CachedTokens,
-			}
+			out.Usage = chunk.Usage.usage()
 		}
 		if len(chunk.Choices) == 0 {
 			continue

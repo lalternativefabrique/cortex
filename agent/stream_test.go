@@ -87,7 +87,7 @@ func TestReadSSECapturesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Usage{Input: 500, Output: 20, CachedInput: 400}
+	want := Usage{Input: 500, Output: 20, CachedInput: 400, Unpriced: 1}
 	if resp.Usage != want {
 		t.Fatalf("Usage = %+v, want %+v — cached_tokens is how prefix stability is measured", resp.Usage, want)
 	}

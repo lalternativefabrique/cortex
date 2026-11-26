@@ -168,13 +168,7 @@ type wireResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-	} `json:"usage"`
+	Usage wireUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -332,11 +326,7 @@ func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, e
 		Text:       choice.Message.Content,
 		Reasoning:  firstNonEmpty(choice.Message.Reasoning, choice.Message.ReasoningContent),
 		StopReason: choice.FinishReason,
-		Usage: Usage{
-			Input:       wr.Usage.PromptTokens,
-			Output:      wr.Usage.CompletionTokens,
-			CachedInput: wr.Usage.PromptTokensDetails.CachedTokens,
-		},
+		Usage:      wr.Usage.usage(),
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		args := tc.Function.Arguments
