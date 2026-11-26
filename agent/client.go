@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,10 @@ type CompletionRequest struct {
 	System   string
 	Messages []Message
 	Tools    []Tool
+	// ForceTool names the one tool the model must call on this step: the
+	// server constrains its output to that call, which a model that ignores
+	// an instruction to call it cannot escape.
+	ForceTool string
 }
 
 // CompletionResponse is a single model turn.
@@ -106,6 +111,7 @@ type wireRequest struct {
 	Model       string        `json:"model"`
 	Messages    []wireMessage `json:"messages"`
 	Tools       []wireTool    `json:"tools,omitempty"`
+	ToolChoice  *wireChoice   `json:"tool_choice,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	// ReasoningEffort is ignored by servers that do not serve reasoning
@@ -116,6 +122,15 @@ type wireRequest struct {
 	// StreamOptions asks the server to include a final usage chunk, which
 	// most OpenAI-compatible servers omit from a stream otherwise.
 	StreamOptions *wireStreamOptions `json:"stream_options,omitempty"`
+}
+
+type wireChoice struct {
+	Type     string             `json:"type"`
+	Function wireChoiceFunction `json:"function"`
+}
+
+type wireChoiceFunction struct {
+	Name string `json:"name"`
 }
 
 type wireStreamOptions struct {
@@ -277,6 +292,9 @@ func (c *httpClient) buildPayload(req CompletionRequest) (wireRequest, error) {
 		Temperature: c.provider.Temperature,
 		MaxTokens:   c.provider.MaxTokens,
 		Stream:      false,
+	}
+	if req.ForceTool != "" && slices.ContainsFunc(req.Tools, func(t Tool) bool { return t.Name() == req.ForceTool }) {
+		out.ToolChoice = &wireChoice{Type: "function", Function: wireChoiceFunction{Name: req.ForceTool}}
 	}
 	reasonerFor(c.provider.Model).Apply(c.provider.ReasoningEffort, &out)
 	return out, nil
