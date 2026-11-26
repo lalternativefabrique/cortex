@@ -521,6 +521,10 @@ type Usage struct {
 	// one that says nothing.
 	Cost        *float64 `json:"cost,omitempty"`
 	SessionCost *float64 `json:"session_cost,omitempty"`
+	// CostEURMicros is Cost as the providers reported it, exact, present
+	// only when every model call of the turn reported one.
+	CostEURMicros        *int64 `json:"cost_eur_micros,omitempty"`
+	SessionCostEURMicros *int64 `json:"session_cost_eur_micros,omitempty"`
 	// Seconds is how long the turn took, as the CLI printed under each answer.
 	Seconds float64 `json:"seconds"`
 }
@@ -765,7 +769,12 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 	res, err := runner.Run(withAttachments(r.Context(), files), conv.history)
 	if err != nil {
 		failure = err.Error()
-		emit(Event{Kind: "error", Err: err.Error()})
+		res.Usage.Add(researched.total())
+		s.mu.Lock()
+		conv.usage.Add(res.Usage)
+		session := conv.usage
+		s.mu.Unlock()
+		emit(Event{Kind: "error", Err: err.Error(), Usage: s.turnUsage(r.Context(), model, res.Usage, session, res.Steps, sink.toolCalls, started)})
 		return
 	}
 	answer = res.Text
@@ -784,9 +793,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		_ = conv.store.Append(answered)
 		_ = conv.store.AppendUsage(res.Usage, model, time.Now())
 	}
-	conv.usage.Input += res.Usage.Input
-	conv.usage.CachedInput += res.Usage.CachedInput
-	conv.usage.Output += res.Usage.Output
+	conv.usage.Add(res.Usage)
 	conv.steps += res.Steps
 	conv.tools += sink.toolCalls
 	session := conv.usage
@@ -796,19 +803,7 @@ func (s *Server) handleTurn(w http.ResponseWriter, r *http.Request) {
 		Kind:      "message",
 		Text:      res.Text,
 		Reasoning: res.Reasoning,
-		Usage: &Usage{
-			InputTokens:              res.Usage.Input,
-			CachedInputTokens:        res.Usage.CachedInput,
-			OutputTokens:             res.Usage.Output,
-			Steps:                    res.Steps,
-			ToolCalls:                sink.toolCalls,
-			SessionInputTokens:       session.Input,
-			SessionCachedInputTokens: session.CachedInput,
-			SessionOutputTokens:      session.Output,
-			Cost:                     s.priced(r.Context(), model, res.Usage),
-			SessionCost:              s.priced(r.Context(), model, session),
-			Seconds:                  time.Since(started).Seconds(),
-		},
+		Usage:     s.turnUsage(r.Context(), model, res.Usage, session, res.Steps, sink.toolCalls, started),
 	})
 	emit(Event{Kind: "done"})
 }
@@ -922,9 +917,36 @@ func (s *Server) system(caller string, incognito bool) string {
 
 // handleWorkspace reports what this machine is offering, so a window can say
 // which repository it is pointed at before anything is asked of it.
-// priced converts what a turn used into euros, or nothing when the host
-// gave no Pricer or it has no rate for the model.
+func (s *Server) turnUsage(ctx context.Context, model string, turn, session agent.Usage, steps, toolCalls int, started time.Time) *Usage {
+	u := &Usage{
+		InputTokens:              turn.Input,
+		CachedInputTokens:        turn.CachedInput,
+		OutputTokens:             turn.Output,
+		Steps:                    steps,
+		ToolCalls:                toolCalls,
+		SessionInputTokens:       session.Input,
+		SessionCachedInputTokens: session.CachedInput,
+		SessionOutputTokens:      session.Output,
+		Cost:                     s.priced(ctx, model, turn),
+		SessionCost:              s.priced(ctx, model, session),
+		Seconds:                  time.Since(started).Seconds(),
+	}
+	if cost, ok := turn.ReportedCost(); ok {
+		u.CostEURMicros = &cost
+	}
+	if cost, ok := session.ReportedCost(); ok {
+		u.SessionCostEURMicros = &cost
+	}
+	return u
+}
+
+// priced converts what a turn used into euros: what its providers reported
+// when every call did, else the host's Pricer, else nothing.
 func (s *Server) priced(ctx context.Context, model string, u agent.Usage) *float64 {
+	if cost, ok := u.ReportedCost(); ok {
+		euros := float64(cost) / 1e6
+		return &euros
+	}
 	if s.pricer == nil {
 		return nil
 	}
@@ -1306,6 +1328,9 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		SessionCachedInputTokens: conv.usage.CachedInput,
 		SessionOutputTokens:      conv.usage.Output,
 		SessionCost:              s.priced(r.Context(), s.cfg.Provider.Model, conv.usage),
+	}
+	if cost, ok := conv.usage.ReportedCost(); ok {
+		view.Usage.SessionCostEURMicros = &cost
 	}
 	writeJSON(w, http.StatusOK, view)
 }
