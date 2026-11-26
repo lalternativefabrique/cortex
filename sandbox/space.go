@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os/exec"
@@ -40,6 +42,30 @@ type Space struct {
 	up     *exec.Cmd
 	upIn   io.WriteCloser
 	exited chan struct{}
+	// joined is a space another agent on the same workspace opened and
+	// holds: this one runs its commands there and never tears it down.
+	joined  bool
+	checked time.Time
+}
+
+// joinedRecheck is how long a joined space is trusted before it is checked
+// again: its holder may have gone, and the space with it.
+const joinedRecheck = 30 * time.Second
+
+// AgentSpaceName is the space sklp gives a workspace's agent
+// (sklp space.AgentSpaceName): one per checkout, whichever agent opens it.
+func AgentSpaceName(root string) string {
+	sum := sha256.Sum256([]byte(root))
+	base := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, strings.ToLower(filepath.Base(root)))
+	if base == "" {
+		base = "run"
+	}
+	return "agent-" + base + "-" + hex.EncodeToString(sum[:4])
 }
 
 func (s *Space) Name() string { return "sklp-agent-space" }
@@ -82,7 +108,7 @@ func (s *Space) Warm(ctx context.Context) {
 func (s *Space) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.upIn == nil {
+	if s.joined || s.upIn == nil {
 		return nil
 	}
 	_ = s.upIn.Close()
@@ -122,9 +148,24 @@ func under(base, dir string) (string, bool) {
 // start opens the space, or reopens it when it stopped, and waits until a
 // command runs in it. If it cannot start, the command fails: falling back to
 // the host would drop the very boundary the space is for.
+//
+// Another agent on the same workspace may already hold the space: it is
+// joined rather than opened a second time, which sklp refuses with a busy
+// overlay. A space left mounted by a holder that died is stopped, keeping
+// its data, and opened again.
 func (s *Space) start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.joined {
+		if time.Since(s.checked) < joinedRecheck {
+			return nil
+		}
+		if s.ready(ctx) {
+			s.checked = time.Now()
+			return nil
+		}
+		s.joined = false
+	}
 	if s.exited != nil {
 		select {
 		case <-s.exited:
@@ -132,6 +173,23 @@ func (s *Space) start(ctx context.Context) error {
 			return nil
 		}
 	}
+	s.name = AgentSpaceName(s.Root)
+	if s.ready(ctx) {
+		s.joined, s.checked = true, time.Now()
+		return nil
+	}
+	err := s.openOnce(ctx)
+	if err != nil && strings.Contains(err.Error(), "resource busy") {
+		stop := s.command(ctx, "space", "stop", s.name)
+		if out, serr := stop.CombinedOutput(); serr != nil {
+			return fmt.Errorf("%w; freeing it: sklp space stop %s: %s", err, s.name, strings.TrimSpace(string(out)))
+		}
+		err = s.openOnce(ctx)
+	}
+	return err
+}
+
+func (s *Space) openOnce(ctx context.Context) error {
 	err := s.open(ctx)
 	if err != nil && s.up != nil && s.up.Process != nil {
 		_ = s.upIn.Close()
