@@ -94,3 +94,15 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestSklpRunsFromTheWorkspaceWhateverTheAgentsDirectory(t *testing.T) {
+	root, bin := t.TempDir(), t.TempDir()
+	fake := filepath.Join(bin, "sklp")
+	must(t, os.WriteFile(fake, []byte("#!/bin/sh\npwd -P\n"), 0o755))
+	t.Chdir("/")
+	out, err := (&Space{Sklp: fake, Root: root}).command(context.Background(), "space", "exec").Output()
+	want, _ := filepath.EvalSymlinks(root)
+	if err != nil || strings.TrimSpace(string(out)) != want {
+		t.Fatalf("sklp ran in %q (%v), want %q", out, err, want)
+	}
+}
