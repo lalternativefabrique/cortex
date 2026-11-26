@@ -32,6 +32,10 @@ type BashConfig struct {
 	// may exist. False for an ephemeral task clone on a server, where neither
 	// does. Only changes what Description() says is available.
 	Workstation bool
+	// Tooling is what the host says about the machine's sklp and its other
+	// tools; it replaces the generic workstation word on sklp, which a host
+	// that drives sklp knows better.
+	Tooling string
 }
 
 const (
@@ -46,7 +50,10 @@ func (c BashConfig) sklpDescription() string {
 	if !c.Workstation {
 		return "This is an ephemeral clone of a repository, not an operator's workstation: there is no local `sklp dev` stack running here and no `sklp flow` branch to open. `sklp` commands that read repository-local state (issues, docs) still work; anything that assumes a running stack or a person to ask does not."
 	}
-	return "This repository is driven by `sklp`. Read its state to diagnose a failure — `sklp deploy logs <service>` for what a service printed, `sklp deploy ls` for what is running, `sklp cache status` for disk. Track work with `sklp issue list|show|new|edit|status`, which is where this project keeps its tickets — it needs --project or --stack unless SKLP_PROJECT is set, and says so. `sklp flow start <name>` opens a branch; `sklp flow end` pushes and opens a pull request, and always asks first whatever the mode, because a PR is public and carries the operator's name.\n\nThe local stack runs under `sklp dev <stack>`, which holds the terminal until stopped — never start one here, it would hold this call until the timeout. `sklp dev down` stops a stack started in another terminal, and `sklp dev --validate` checks the configuration without launching anything. Starting or stopping a stack, running a pipeline and cleaning caches all ask first: it is the operator's working environment, and they may be using it. To find out whether something is up, probe it (`curl -sf http://127.0.0.1:4100/...`) rather than reading the exit code of a kill."
+	if c.Tooling != "" {
+		return c.Tooling
+	}
+	return "This repository may be driven by `sklp`. Read its state to diagnose a failure: `sklp deploy logs <service>`, `sklp deploy ls`, `sklp space ls`, `sklp cache status`. Check a command with `sklp <verb> --help` before using one you have not used here: never guess a subcommand or a flag."
 }
 
 // clusterDescription explains kubectl/helm/docker on a workstation, and says

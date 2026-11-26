@@ -143,7 +143,10 @@ type Config struct {
 	// none, which is right for a deployment that runs unattended: MCP
 	// (a browser, a database) is for the workstation, where a person is
 	// present to notice what it does.
-	MCP mcp.Config
+	// Tooling is what the host says about the machine's sklp and other
+	// tools, given to the shell tool in place of its generic word.
+	Tooling string
+	MCP     mcp.Config
 }
 
 // Server answers turns from a front end running elsewhere.
@@ -304,6 +307,7 @@ func codingTools(cfg Config) []agent.Tool {
 			Sandbox:     cfg.Sandbox,
 			Approver:    cfg.Approver,
 			Workstation: true,
+			Tooling:     cfg.Tooling,
 		}),
 	}
 }
