@@ -66,7 +66,7 @@ func (s *Space) Run(ctx context.Context, c Command) (Output, error) {
 	args := []string{"space", "exec", s.name, "--", "env"}
 	args = append(args, c.Env...)
 	args = append(args, "sh", "-c", "cd "+shellQuote(dir)+" && "+c.Line)
-	cmd := exec.CommandContext(cctx, s.sklp(), args...)
+	cmd := s.command(cctx, args...)
 	cmd.Stdin = c.Stdin
 	return execute(cctx, cmd, c, started)
 }
@@ -148,7 +148,7 @@ func (s *Space) open(ctx context.Context) error {
 	for _, m := range s.Mounts {
 		args = append(args, "-mount", m)
 	}
-	up := exec.Command(s.sklp(), args...)
+	up := s.command(context.Background(), args...)
 	in, err := up.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("sandbox: agent space input: %w", err)
@@ -198,7 +198,16 @@ func (s *Space) open(ctx context.Context) error {
 func (s *Space) ready(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(cctx, s.sklp(), "space", "exec", s.name, "--", "true").Run() == nil
+	return s.command(cctx, "space", "exec", s.name, "--", "true").Run() == nil
+}
+
+// command runs sklp from the workspace, not from the agent's own working
+// directory: an app started from the Finder runs in /, and on a Mac sklp
+// relays into its VM only from under the home directory.
+func (s *Space) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, s.sklp(), args...)
+	cmd.Dir = s.Root
+	return cmd
 }
 
 func (s *Space) sklp() string {
