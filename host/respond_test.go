@@ -249,3 +249,19 @@ func TestASchemaThatIsNotAnObjectFailsTheTurnAtOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestAReminderForcesTheModelToCallRespond(t *testing.T) {
+	events, bodies := structuredTurn(t,
+		scriptedReply{text: "Voici le style."},
+		scriptedReply{respond: `{"category":"devtools","energy":50}`},
+	)
+	if finalState(events) != "completed" || len(*bodies) != 2 {
+		t.Fatalf("state %q after %d model calls", finalState(events), len(*bodies))
+	}
+	if strings.Contains((*bodies)[0], `"tool_choice"`) {
+		t.Errorf("the first step must leave the model free to use its tools: %s", (*bodies)[0])
+	}
+	if !strings.Contains((*bodies)[1], `"tool_choice":{"type":"function","function":{"name":"respond"}}`) {
+		t.Errorf("the reminder must force respond: %s", (*bodies)[1])
+	}
+}

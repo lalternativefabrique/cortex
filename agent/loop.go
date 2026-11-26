@@ -89,6 +89,9 @@ type Config struct {
 	// MaxToolResultBytes caps what a single tool result contributes to the
 	// context. Zero means DefaultMaxToolResultBytes.
 	MaxToolResultBytes int
+	// ForceTool names a tool every step must call, when it is offered; see
+	// CompletionRequest.ForceTool.
+	ForceTool string
 	// ContextWindow is the model's context length in tokens. Zero disables
 	// compaction, which is right for short runs and for servers whose window
 	// is unknown.
@@ -316,9 +319,10 @@ func (r *Runner) run(ctx context.Context, messages []Message) (Result, error) {
 		offered, _ := r.offered(history)
 		called := time.Now()
 		resp, err := r.complete(ctx, CompletionRequest{
-			System:   r.cfg.System,
-			Messages: history,
-			Tools:    offered,
+			System:    r.cfg.System,
+			Messages:  history,
+			Tools:     offered,
+			ForceTool: r.cfg.ForceTool,
 		})
 		if err != nil {
 			r.cfg.Callback.OnError(err)

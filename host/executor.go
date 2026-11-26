@@ -163,6 +163,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 			System:         system,
 			MaxSteps:       b.steps,
 			MaxInputTokens: b.inputTokens,
+			ForceTool:      b.forceTool,
 			ContextWindow:  h.cfg.ContextWindow,
 			Stream:         true,
 			Callback:       stream,
@@ -261,6 +262,8 @@ func (h *Host) endStructured(ctx context.Context, end func(a2a.TaskState, string
 type runBounds struct {
 	steps       int
 	inputTokens int
+	// forceTool is the tool every step of the run must call.
+	forceTool string
 }
 
 // tightened applies a skill's own bounds over the agent's, where it declares
@@ -282,7 +285,7 @@ const reminderSteps = 2
 // remaining is the bounds of a reminder after spent input tokens, and false
 // once a token budget is used up.
 func (b runBounds) remaining(spent int) (runBounds, bool) {
-	left := runBounds{steps: reminderSteps}
+	left := runBounds{steps: reminderSteps, forceTool: respondName}
 	if b.inputTokens > 0 {
 		left.inputTokens = b.inputTokens - spent
 		if left.inputTokens <= 0 {
