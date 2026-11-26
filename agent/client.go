@@ -172,7 +172,7 @@ type wireFunction struct {
 type wireResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content wireContent `json:"content"`
 			// A reasoning model puts its thinking here and leaves content
 			// empty until it is done. Cut short — by a step budget, or a
 			// max_tokens — that is the whole of what it said, and dropping it
@@ -341,7 +341,7 @@ func (c *httpClient) do(ctx context.Context, body []byte) (CompletionResponse, e
 
 	choice := wr.Choices[0]
 	out := CompletionResponse{
-		Text:       choice.Message.Content,
+		Text:       string(choice.Message.Content),
 		Reasoning:  firstNonEmpty(choice.Message.Reasoning, choice.Message.ReasoningContent),
 		StopReason: choice.FinishReason,
 		Usage:      wr.Usage.usage(),

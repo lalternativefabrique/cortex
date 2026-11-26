@@ -23,7 +23,7 @@ type StreamingClient interface {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content wireContent `json:"content"`
 			// Providers disagree on the name; a reasoning model sends one of
 			// these and no content until it has finished thinking.
 			Reasoning        string `json:"reasoning"`
@@ -131,7 +131,7 @@ func readSSE(r interface{ Read([]byte) (int, error) }, onDelta func(string)) (Co
 		if choice.FinishReason != "" {
 			out.StopReason = choice.FinishReason
 		}
-		if d := choice.Delta.Content; d != "" {
+		if d := string(choice.Delta.Content); d != "" {
 			text.WriteString(d)
 			if onDelta != nil {
 				onDelta(d)
