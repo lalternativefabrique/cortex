@@ -409,3 +409,10 @@ func TestARunAsksForItsReasoningEffort(t *testing.T) {
 		t.Errorf("the run's effort was not asked for: %s", (*bodies)[0])
 	}
 }
+
+func TestASkillsProviderIsInItsDeclaration(t *testing.T) {
+	s := Declare[styleInput, string](Spec[styleInput]{ID: "write", Model: "mistral-medium-latest", Provider: "mistral"})
+	if d := s.Declaration(); d.Provider != "mistral" || d.Model != "mistral-medium-latest" {
+		t.Errorf("declaration = %+v", d)
+	}
+}
