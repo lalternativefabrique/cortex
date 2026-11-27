@@ -131,6 +131,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	if model, _ := meta[ModelKey].(string); strings.TrimSpace(model) != "" {
 		provider.Model = strings.TrimSpace(model)
 	}
+	provider = h.providerServing(ctx, provider)
 	effort, err := reasoningEffort(meta, provider)
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
@@ -543,4 +544,21 @@ func (s *stream) OnToolEnd(trace agent.ToolCallTrace) {
 	if err := s.emit(s.ctx, ev); err != nil {
 		slog.Warn("host: tool call not reported", "tool", trace.Name, "error", err)
 	}
+}
+
+func (h *Host) providerServing(ctx context.Context, p agent.Provider) agent.Provider {
+	if h.cfg.ProviderFor == nil || p.Model == h.cfg.Provider.Model {
+		return p
+	}
+	other, ok := h.cfg.ProviderFor(ctx, p.Model)
+	if !ok {
+		return p
+	}
+	if other.Model == "" {
+		other.Model = p.Model
+	}
+	if other.ReasoningEffort == "" {
+		other.ReasoningEffort = p.ReasoningEffort
+	}
+	return other
 }
