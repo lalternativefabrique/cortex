@@ -102,6 +102,7 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 	}
 	person := h.personOf(subject, meta)
 	provider := h.cfg.Provider
+	var upstream string
 	bounds := runBounds{steps: h.cfg.MaxSteps, inputTokens: max(h.cfg.MaxInputTokens, 0)}
 	base := h.withProfile(ctx, log, instructions(h.cfg.Agent.Instructions, h.appInstructionsNow()), person)
 	system := instructions(base, turnContext)
@@ -126,12 +127,13 @@ func (h *Host) run(ctx context.Context, turn Turn, emit Emit) error {
 		if declared.Model != "" {
 			provider.Model = declared.Model
 		}
+		upstream = declared.Provider
 		bounds = bounds.tightened(declared.MaxSteps, declared.MaxInputTokens)
 	}
 	if model, _ := meta[ModelKey].(string); strings.TrimSpace(model) != "" {
 		provider.Model = strings.TrimSpace(model)
 	}
-	provider = h.providerServing(ctx, provider)
+	provider = h.providerServing(ctx, provider, upstream)
 	effort, err := reasoningEffort(meta, provider)
 	if err != nil {
 		return end(a2a.TaskStateFailed, err.Error())
@@ -546,11 +548,11 @@ func (s *stream) OnToolEnd(trace agent.ToolCallTrace) {
 	}
 }
 
-func (h *Host) providerServing(ctx context.Context, p agent.Provider) agent.Provider {
-	if h.cfg.ProviderFor == nil || p.Model == h.cfg.Provider.Model {
+func (h *Host) providerServing(ctx context.Context, p agent.Provider, upstream string) agent.Provider {
+	if h.cfg.ProviderFor == nil || (upstream == "" && p.Model == h.cfg.Provider.Model) {
 		return p
 	}
-	other, ok := h.cfg.ProviderFor(ctx, p.Model)
+	other, ok := h.cfg.ProviderFor(ctx, p.Model, upstream)
 	if !ok {
 		return p
 	}

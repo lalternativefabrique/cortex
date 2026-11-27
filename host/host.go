@@ -76,10 +76,11 @@ type Config struct {
 	// Fallbacks are asked in turn when Provider fails, each with its own
 	// model and key (agent.WithFallbacks).
 	Fallbacks []agent.Provider
-	// ProviderFor is where a run on another model than Provider's goes,
-	// when that model is served by another upstream: a skill's model or the
-	// one a caller asks for. Nil, or false, asks Provider's upstream for it.
-	ProviderFor func(ctx context.Context, model string) (agent.Provider, bool)
+	// ProviderFor is where a run goes when it names another model than
+	// Provider's, or a skill names its provider: the upstream that serves
+	// that model, or the one provider names. Nil, or false, asks Provider's
+	// upstream for the model.
+	ProviderFor func(ctx context.Context, model, provider string) (agent.Provider, bool)
 	MCP         mcp.Config
 	// Tools are offered on every turn beside the MCP servers' tools: what
 	// the host itself can do, such as reading the web.

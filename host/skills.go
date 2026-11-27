@@ -27,6 +27,9 @@ type Skill struct {
 	// Model is the model this skill runs on, chosen by the app for the
 	// task; empty uses the agent's. A run may still ask for another.
 	Model string `json:"model,omitempty"`
+	// Provider names the upstream this skill runs on, as the embedder knows
+	// it (Config.ProviderFor); empty lets the model decide.
+	Provider string `json:"provider,omitempty"`
 	// VisionModel reads this skill's attached images; empty uses the
 	// agent's. A run may still ask for another.
 	VisionModel string `json:"vision_model,omitempty"`
