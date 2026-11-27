@@ -30,6 +30,9 @@ type Spec[In any] struct {
 	Model string
 	// VisionModel reads the skill's images; empty uses the agent's.
 	VisionModel string
+	// Provider names the upstream this skill runs on, as the agent's host
+	// knows it; empty lets the model decide.
+	Provider string
 }
 
 // Skill is a declared action: its declaration, and the call that runs it.
@@ -43,7 +46,7 @@ func Declare[In, Out any](s Spec[In]) Skill[In, Out] {
 	if s.ID == "" {
 		panic("skill: an id is required")
 	}
-	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions, Model: s.Model, VisionModel: s.VisionModel}
+	d := host.Skill{ID: s.ID, Name: s.Name, Description: s.Description, Instructions: s.Instructions, Model: s.Model, VisionModel: s.VisionModel, Provider: s.Provider}
 	var in In
 	d.Input = mustSchema(s.ID, "input", &in)
 	if !isText[Out]() {
